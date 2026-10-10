@@ -1,45 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ChangeListManager">
-    <list default="true" id="a7538e4b-e276-4ceb-941a-0c93c7bcadb8" name="更改" comment="">
-      <change afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/BOT/.idea/myTGBOTibkr.iml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/BOT/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/BOT/src/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/BOT/tests/__init__.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.env.example" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/.env.example" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/.gitignore" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alembic.ini" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/alembic.ini" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alembic/env.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/alembic/env.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alembic/script.py.mako" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/alembic/script.py.mako" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alembic/versions/0001_initial.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/alembic/versions/0001_initial.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/deploy/quantbot-backup.service" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/deploy/quantbot-backup.service" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/deploy/quantbot-backup.timer" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/deploy/quantbot-backup.timer" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/deploy/quantbot.service" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/deploy/quantbot.service" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pyproject.toml" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/pyproject.toml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/quantbot/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/src/quantbot/__init__.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/quantbot/announcements.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/src/quantbot/announcements.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/quantbot/backup.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/src/quantbot/backup.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/quantbot/bot.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/src/quantbot/bot.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/quantbot/config.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/src/quantbot/config.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/quantbot/csv_io.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/src/quantbot/csv_io.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/quantbot/db.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/src/quantbot/db.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/quantbot/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/src/quantbot/main.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/quantbot/models.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/src/quantbot/models.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/quantbot/security.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/src/quantbot/security.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/quantbot/services.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/src/quantbot/services.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/conftest.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/tests/conftest.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_accounts.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/tests/test_accounts.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_announcements.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/tests/test_announcements.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_backup.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/tests/test_backup.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_config_security.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/tests/test_config_security.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_csv.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/tests/test_csv.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_plans.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/tests/test_plans.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_portfolio.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/tests/test_portfolio.py" afterDir="false" />
-    </list>
+    <list default="true" id="a7538e4b-e276-4ceb-941a-0c93c7bcadb8" name="更改" comment="1" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -67,6 +29,9 @@
     &quot;accountId&quot;: &quot;69f36ea7-a097-4f99-9089-775ed6a4a5d8&quot;
   }
 }</component>
+  <component name="ProblemsViewState">
+    <option name="selectedTabId" value="CurrentFile" />
+  </component>
   <component name="ProjectColorInfo">{
   &quot;associatedIndex&quot;: 2,
   &quot;fromUser&quot;: false
@@ -110,9 +75,22 @@
       <option name="presentableId" value="Default" />
       <updated>1791633222540</updated>
     </task>
+    <task id="LOCAL-00001" summary="1">
+      <option name="closed" value="true" />
+      <created>1791645828267</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1791645828267</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="1" />
+    <option name="LAST_COMMIT_MESSAGE" value="1" />
   </component>
 </project>

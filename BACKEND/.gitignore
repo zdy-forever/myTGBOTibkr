@@ -1,4 +1,3 @@
-.env
 var/
 cache/
 state.json
