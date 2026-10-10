@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-strategy"
+version = "0.1.0"
+description = "R5 + K1A + K5x leader-rotation strategy module: shared market run and per-user signals (suggestions only, no orders)"
+requires-python = ">=3.9"
+dependencies = ["requests>=2.31", "pandas>=2.0", "numpy>=1.24", "pyarrow>=14", "fsspec>=2023.1", "aiohttp>=3.9"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+quant-strategy = "quant_strategy.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["quant_strategy*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

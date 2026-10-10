@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import calendar
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -31,6 +32,24 @@ def decimal_value(value: str | int | Decimal, *, positive: bool = False) -> Deci
     if not result.is_finite() or (positive and result <= 0) or (not positive and result < 0):
         raise ValueError("value is outside the allowed range")
     return result
+
+
+MONEY_RE = re.compile(r"^(?:(?P<sym>\$|US\$)\s*)?(?P<num>\d+(?:\.\d+)?|\.\d+)\s*(?P<cur>[A-Za-z]{3}|美元|美金)?$|^(?P<cur2>[A-Za-z]{3})\s*(?P<num2>\d+(?:\.\d+)?)$")
+MAX_CASH = Decimal("100000000000")
+
+
+def parse_money_text(text: str) -> tuple[Decimal, str]:
+    """Forgiving cash input -> (amount, currency): `200 USD`, `200usd`, `$200`, `1,000.5 usd`, `USD 200`, `200美元`; no currency means USD. Raises ValueError for anything else."""
+    cleaned = text.strip().replace(",", "").replace("，", "").replace("＄", "$")
+    match = MONEY_RE.match(cleaned)
+    if not match:
+        raise ValueError("cannot read the amount")
+    amount = Decimal(match.group("num") or match.group("num2"))
+    currency = match.group("cur") or match.group("cur2") or "USD"
+    currency = "USD" if currency in {"美元", "美金"} else currency.upper()
+    if amount > MAX_CASH:
+        raise ValueError("amount is too large")
+    return amount, currency
 
 
 def normalize_symbol(value: str) -> str:
@@ -69,6 +88,14 @@ class AccountService:
 
     def by_telegram(self, session: Session, telegram_id: int) -> User | None:
         return session.scalar(select(User).where(User.telegram_id == telegram_id, User.is_active))
+
+    def unregister(self, session: Session, telegram_id: int) -> bool:
+        """The user's own request: delete the account and everything that belongs to it (the database cascades to positions, cash, plans, history, signals and preferences)."""
+        user = self.by_telegram(session, telegram_id)
+        if user is None:
+            return False
+        session.execute(delete(User).where(User.id == user.id))
+        return True
 
     def register(self, session: Session, telegram_id: int, phone: str) -> RegistrationResult:
         existing = self.by_telegram(session, telegram_id)

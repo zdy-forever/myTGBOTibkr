@@ -31,6 +31,8 @@ def configure_logging(level: str) -> None:
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JsonFormatter())
     logging.basicConfig(level=level.upper(), handlers=[handler], force=True)
+    for noisy in ("httpx", "httpcore"):          # their INFO lines contain the full Telegram URL, which includes the bot token
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def build_application(settings: Settings) -> Application:
@@ -41,7 +43,10 @@ def build_application(settings: Settings) -> Application:
         settings.maintainer_telegram_ids,
     )
     application = Application.builder().token(settings.telegram_bot_token).build()
-    return configure_application(application, accounts, factory)
+    configure_application(application, accounts, factory)
+    application.bot_data["strategy_autorun"] = settings.strategy_autorun
+    application.bot_data["strategy_push"] = (settings.strategy_push_timezone, settings.strategy_push_hour)
+    return application
 
 
 def main() -> None:

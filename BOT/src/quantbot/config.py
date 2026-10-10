@@ -31,6 +31,9 @@ class Settings:
     log_level: str = "INFO"
     backup_dir: Path = Path("backups")
     backup_retention_days: int = 30
+    strategy_autorun: bool = False
+    strategy_push_timezone: str = "Asia/Shanghai"
+    strategy_push_hour: int = 10
 
     @classmethod
     def from_env(cls, *, require_token: bool = True) -> Settings:
@@ -50,4 +53,7 @@ class Settings:
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             backup_dir=Path(os.getenv("BACKUP_DIR", "backups")),
             backup_retention_days=int(os.getenv("BACKUP_RETENTION_DAYS", "30")),
+            strategy_autorun=os.getenv("STRATEGY_AUTORUN", "0").strip().lower() in {"1", "true", "yes"},
+            strategy_push_timezone=os.getenv("STRATEGY_PUSH_TIMEZONE", "Asia/Shanghai"),
+            strategy_push_hour=int(os.getenv("STRATEGY_PUSH_HOUR", "10")),
         )

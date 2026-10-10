@@ -9,3 +9,4 @@ backups/
 .ruff_cache/
 dist/
 *.egg-info/
+data/

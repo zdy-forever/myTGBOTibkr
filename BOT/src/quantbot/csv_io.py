@@ -8,10 +8,9 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
+from .display import plain
 from .models import User
 from .services import (
-    FREQUENCY_TO_MODE,
-    MODE_TO_FREQUENCY,
     PortfolioService,
     decimal_value,
     normalize_currency,
@@ -42,21 +41,15 @@ def import_portfolio_csv(session: Session, user: User, content: str, *, actor: i
         raise ValueError("CSV header must be Company,Shares Held,Average Price")
     service = PortfolioService()
     parsed_positions: list[tuple[str, Decimal, Decimal, str]] = []
-    cash_row: tuple[int, Decimal, str] | None = None
+    cash_row: tuple[Decimal, str] | None = None
     seen: set[str] = set()
     for line_no, row in enumerate(reader, start=2):
         company = (row["Company"] or "").strip()
         if company.lower() == "current_cash":
             if cash_row is not None:
                 raise ValueError("CSV contains multiple current_cash rows")
-            try:
-                mode = int(row["Shares Held"])
-            except ValueError as exc:
-                raise ValueError(f"line {line_no}: invalid cash management mode") from exc
-            if mode not in MODE_TO_FREQUENCY:
-                raise ValueError(f"line {line_no}: cash mode must be 0 through 4")
-            amount, currency = _money(row["Average Price"])
-            cash_row = (mode, amount, currency)
+            amount, currency = _money(row["Average Price"])           # the second column of this row is ignored: whatever is written there makes no difference
+            cash_row = (amount, currency)
             continue
         symbol = normalize_symbol(company)
         if symbol in seen:
@@ -75,9 +68,8 @@ def import_portfolio_csv(session: Session, user: User, content: str, *, actor: i
     for symbol, shares, cost, currency in parsed_positions:
         service.add_position(session, user, symbol, shares, cost, currency, actor=actor)
     if cash_row:
-        mode, amount, currency = cash_row
-        cash = service.set_cash(session, user, amount, currency, actor=actor)
-        cash.management_mode = MODE_TO_FREQUENCY[mode]
+        amount, currency = cash_row
+        service.set_cash(session, user, amount, currency, actor=actor)
     return ImportResult(len(parsed_positions), cash_row is not None)
 
 
@@ -87,9 +79,9 @@ def export_portfolio_csv(session: Session, user: User) -> str:
     writer = csv.writer(output, lineterminator="\n")
     writer.writerow(["Company", "Shares Held", "Average Price"])
     cash = service.cash(session, user.id)
-    writer.writerow(["current_cash", FREQUENCY_TO_MODE[cash.management_mode],
-                     f"{cash.balance} {cash.currency}"])
+    writer.writerow(["current_cash", 0,
+                     f"{plain(cash.balance, 2, 8)} {cash.currency}"])
     for position in service.list_positions(session, user.id):
-        writer.writerow([position.symbol, position.shares,
-                         f"{position.average_cost} {position.currency}"])
+        writer.writerow([position.symbol, plain(position.shares, 0, 10),
+                         f"{plain(position.average_cost, 2, 8)} {position.currency}"])
     return output.getvalue()

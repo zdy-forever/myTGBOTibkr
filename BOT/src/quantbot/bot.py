@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import html
 import io
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import desc, select
 from telegram import (
@@ -13,6 +14,7 @@ from telegram import (
     ReplyKeyboardRemove,
     Update,
 )
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -26,26 +28,16 @@ from telegram.ext import (
 from .announcements import publish_announcement
 from .csv_io import export_portfolio_csv, import_portfolio_csv
 from .db import transaction
-from .models import Announcement, NotificationPreference, PlanFrequency, Transaction
-from .services import AccountService, PlanService, PortfolioService, system_stats
+from .display import price, qty, render_portfolio
+from .help_text import QUICK, help_for
+from .models import Announcement, NotificationPreference, Transaction
+from .services import AccountService, PortfolioService, parse_money_text, system_stats
+from .strategy_text import render_cooldowns
 
 log = logging.getLogger(__name__)
-CONTACT, ADD_DATA, EDIT_DATA, REMOVE_CONFIRM, CASH_DATA, PLAN_DATA, ANNOUNCE_TEXT, ANNOUNCE_CONFIRM = range(8)
-
-HELP = """可用命令：
-/portfolio 持仓与现金
-/add 添加持仓
-/edit 修改持仓
-/remove 删除持仓
-/cash 修改现金
-/plan 设置定投
-/import 导入 CSV（随后发送文件）
-/export 导出 CSV
-/signals 策略信号（等待策略接入）
-/history 最近账户操作
-/settings 通知设置
-/cancel 取消当前操作"""
-
+HISTORY_TEXT = {"position_create": "新增持仓", "position_update": "修改持仓", "position_delete": "删除持仓", "cash_set": "设置现金", "cash_adjust": "调整现金",
+                "plan_contribution": "定投入账", "csv_import": "导入 CSV"}
+CONTACT, ADD_DATA, EDIT_DATA, REMOVE_CONFIRM, CASH_DATA, ANNOUNCE_TEXT, ANNOUNCE_CONFIRM = range(7)
 
 def _services(context: ContextTypes.DEFAULT_TYPE):
     return context.application.bot_data["accounts"], PortfolioService()
@@ -61,13 +53,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     accounts, _ = _services(context)
     with transaction(context.application.bot_data["session_factory"]) as session:
         if accounts.by_telegram(session, update.effective_user.id):
-            await update.message.reply_text("欢迎回来。\n\n" + HELP)
+            await update.message.reply_text("👋 欢迎回来。\n\n" + QUICK, parse_mode=ParseMode.HTML)
             return ConversationHandler.END
-    keyboard = [[KeyboardButton("分享我的手机号", request_contact=True)]]
-    await update.message.reply_text(
-        "首次使用需要绑定 Telegram 本人的手机号。手机号默认仅保存不可逆的密钥 HMAC 指纹。",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True),
-    )
+    await update.message.reply_text(BIND_TEXT, reply_markup=_contact_keyboard())
+    return CONTACT
+
+
+BIND_TEXT = (
+    "首次使用需要绑定你本人的手机号（只用来识别你本人，默认只保存不可逆的指纹，不会保存号码本身）。\n\n"
+    "👇 怎么绑定：\n"
+    "1. 点输入框下方的按钮「📱 分享我的手机号」。\n"
+    "2. 在弹出的确认框里选「分享」。\n\n"
+    "没看到按钮？点输入框右边的小键盘图标（或四个点的图标）展开。电脑版/网页版 Telegram 可能不显示这个按钮，请用手机版。\n"
+    "注意：不能手动输入号码，也不能转发别人的名片，只有按钮分享的才有效。\n"
+    "想先了解这个机器人：/help"
+)
+
+
+def _contact_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup([[KeyboardButton("📱 分享我的手机号", request_contact=True)]], resize_keyboard=True, one_time_keyboard=True)
+
+
+async def contact_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Anything other than the shared contact while waiting for the phone number: say how to do it instead of staying silent."""
+    await update.message.reply_text("需要用按钮分享手机号，不能手动输入。\n\n" + BIND_TEXT, reply_markup=_contact_keyboard())
     return CONTACT
 
 
@@ -81,17 +90,65 @@ async def contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         with transaction(context.application.bot_data["session_factory"]) as session:
             accounts.register(session, update.effective_user.id, item.phone_number)
     except ValueError as exc:
-        await update.message.reply_text(str(exc), reply_markup=ReplyKeyboardRemove())
+        text = "这个手机号已经绑定了另一个 Telegram 账号。为防止被冒用，不能自动换绑，请联系管理员核实后处理。" if "already bound" in str(exc) else str(exc)
+        await update.message.reply_text(text, reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
     await update.message.reply_text(
-        "注册完成，账户已初始化。\n\n" + HELP,
+        "✅ <b>注册完成</b>，账户已初始化。\n\n" + QUICK,
+        parse_mode=ParseMode.HTML,
         reply_markup=ReplyKeyboardRemove(),
     )
     return ConversationHandler.END
 
 
+async def help_import(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.args = ["导入"]
+    await help_command(update, context)
+
+
+async def help_faq(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.args = ["问题"]
+    await help_command(update, context)
+
+
+async def unbind_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    with transaction(context.application.bot_data["session_factory"]) as session:
+        try:
+            _require(session, update, context)
+        except PermissionError:
+            await update.message.reply_text("你还没有绑定，不需要解绑。发 /start 开始绑定。")
+            return
+    await update.message.reply_text(
+        "⚠️ 解绑会删除你在这个机器人里的全部数据：手机号绑定、持仓、现金、操作记录和建议。不能撤销。\n"
+        "建议先用 /export 导出你的持仓。解绑后可以随时用 /start 重新绑定（同一个或另一个手机号）。\n\n确定要解绑吗？",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("确认解绑并删除所有数据", callback_data="unbind:yes"), InlineKeyboardButton("取消", callback_data="unbind:no")]]),
+    )
+
+
+async def unbind_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Deletes only the account of whoever pressed the button (never anyone else's)."""
+    query = update.callback_query
+    await query.answer()
+    if query.data == "unbind:no":
+        await query.edit_message_text("已取消，什么都没有改变。")
+        return
+    accounts, _ = _services(context)
+    with transaction(context.application.bot_data["session_factory"]) as session:
+        done = accounts.unregister(session, update.effective_user.id)
+    context.user_data.clear()
+    waiters = context.application.bot_data.get("check_waiters", {})
+    for key in [k for k, telegram_id in waiters.items() if telegram_id == update.effective_user.id]:
+        del waiters[key]
+    if done:
+        log.info("a user unbound and their data was deleted")
+    await query.edit_message_text("已解绑，你的全部数据已删除。需要时发 /start 重新绑定。" if done else "你还没有绑定。发 /start 开始绑定。")
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(HELP)
+    accounts, _ = _services(context)
+    with transaction(context.application.bot_data["session_factory"]) as session:
+        registered = accounts.by_telegram(session, update.effective_user.id) is not None
+    await update.message.reply_text(help_for(context.args[0] if context.args else None, registered), parse_mode=ParseMode.HTML)
 
 
 def _require(session, update, context):
@@ -105,12 +162,11 @@ async def portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             user = _require(session, update, context)
             cash = portfolios.cash(session, user.id)
             positions = portfolios.list_positions(session, user.id)
-            lines = [f"现金：{cash.balance} {cash.currency}（{cash.management_mode.value}）"]
-            lines += [f"{p.symbol}@{p.exchange}: {p.shares} 股，均价 {p.average_cost} {p.currency}" for p in positions]
+            text = render_portfolio(cash, positions)
     except PermissionError:
         await update.message.reply_text("请先使用 /start 注册。")
         return
-    await update.message.reply_text("\n".join(lines))
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -155,7 +211,7 @@ async def edit_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             if not old:
                 raise LookupError("position not found")
             context.user_data["edit"] = (symbol, shares, cost, exchange)
-            text = f"当前：{old.shares} 股，均价 {old.average_cost}\n新值：{shares} 股，均价 {cost}\n确认修改？"
+            text = f"当前：{qty(old.shares)} 股，均价 {price(old.average_cost)}\n新值：{qty(shares)} 股，均价 {price(cost)}\n确认修改？"
     except (ValueError, LookupError, PermissionError) as exc:
         await update.message.reply_text(str(exc))
         return ConversationHandler.END
@@ -203,40 +259,21 @@ async def remove_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def cash_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("请输入现金余额和币种，例如：1000 USD")
+    await update.message.reply_text("请输入现金余额，例如：1000 USD（也可以写 1000usd、$1000、1,000.5 美元；不写币种按美元）。策略只分析美元金额。")
     return CASH_DATA
 
 
 async def cash_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    parts = update.message.text.split()
-    if len(parts) != 2:
+    try:
+        amount, currency = parse_money_text(update.message.text)
+    except ValueError:
+        await update.message.reply_text("没看懂这个金额。请这样输入：1000 USD（也可以写 1000usd、$1000、1,000.5 美元）。取消请发 /cancel。")
         return CASH_DATA
     with transaction(context.application.bot_data["session_factory"]) as session:
         user = _require(session, update, context)
-        PortfolioService().set_cash(session, user, parts[0], parts[1], actor=update.effective_user.id)
-    await update.message.reply_text("现金余额已更新。")
-    return ConversationHandler.END
-
-
-async def plan_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("请输入：金额 币种 周期 下次执行时间(ISO 8601，含时区)\n周期：weekly/monthly/quarterly/yearly")
-    return PLAN_DATA
-
-
-async def plan_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    parts = update.message.text.split()
-    if len(parts) != 4:
-        return PLAN_DATA
-    try:
-        frequency = PlanFrequency(parts[2].lower())
-        when = datetime.fromisoformat(parts[3])
-        with transaction(context.application.bot_data["session_factory"]) as session:
-            user = _require(session, update, context)
-            PlanService().set_plan(session, user, parts[0], parts[1], frequency, when)
-    except (ValueError, PermissionError) as exc:
-        await update.message.reply_text(str(exc))
-        return ConversationHandler.END
-    await update.message.reply_text("定投计划已保存。它只增加模拟账户现金，不会从银行划款。")
+        PortfolioService().set_cash(session, user, amount, currency, actor=update.effective_user.id)
+    note = "" if currency == "USD" else "\n注意：策略只分析美元金额，其他币种的现金不会参与建议。"
+    await update.message.reply_text(f"现金已更新为 {amount:,.2f} {currency}。{note}")
     return ConversationHandler.END
 
 
@@ -275,12 +312,98 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     with transaction(context.application.bot_data["session_factory"]) as session:
         user = _require(session, update, context)
         rows = session.scalars(select(Transaction).where(Transaction.user_id == user.id).order_by(desc(Transaction.created_at)).limit(20)).all()
-        text = "\n".join(f"{row.created_at:%Y-%m-%d %H:%M} {row.type.value} {row.symbol or ''}" for row in rows) or "暂无记录。"
-    await update.message.reply_text(text)
+        body = "\n".join(f"{row.created_at:%m-%d %H:%M}  {HISTORY_TEXT.get(row.type.value, row.type.value)} {row.symbol or ''}".rstrip() for row in rows)
+    await update.message.reply_text(("🕘 <b>最近的账户操作</b>\n<pre>" + html.escape(body) + "</pre>") if body else "暂无记录。", parse_mode=ParseMode.HTML)
 
 
-async def signals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("量化策略尚未接入，因此当前不会生成或推送任何信号。")
+async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Today's scores and suggestions for the CALLER only (own portfolio, own D scores). If the shared data is older than 12 hours it is shown with a notice while a refresh runs in the
+    background; the caller then gets the fresh result automatically. Suggestions only: nothing is ordered."""
+    from . import strategy_service as strategy
+
+    app = context.application
+    try:
+        with transaction(app.bot_data["session_factory"]) as session:
+            user = _require(session, update, context)
+            settings = strategy.strategy_settings()
+            row = strategy.latest_completed(session)
+            fresh = row is not None and strategy.is_fresh(row)
+            text = strategy.check_text(session, user.id, row, settings) if row is not None else ""
+            recent = None if fresh else strategy.recent_attempt(session)
+            user_id = user.id
+    except PermissionError:
+        await update.message.reply_text("请先使用 /start 注册。")
+        return
+    except strategy.StrategyUnavailable as exc:
+        await update.message.reply_text(str(exc))
+        return
+    if fresh:
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+        return
+    notice = ("\n\n⏳ 以上数据不是最新的，正在后台更新（首次可能要几分钟），完成后会自动把最新结果发给你。" if text else "⏳ 还没有可用的数据，正在生成（首次可能要几分钟），完成后会自动发给你。")
+    if recent is not None and not app.bot_data.get("check_job_running"):
+        await update.message.reply_text((text + "\n\n" if text else "") + "刚刚有一次更新尝试，请 30 分钟后再用 /check。", parse_mode=ParseMode.HTML)
+        return
+    app.bot_data.setdefault("check_waiters", {})[user_id] = update.effective_user.id
+    await update.message.reply_text(text + notice, parse_mode=ParseMode.HTML)
+    if not app.bot_data.get("check_job_running"):
+        app.bot_data["check_job_running"] = True
+        app.create_task(_check_refresh_job(app), update=update)
+
+
+async def _check_refresh_job(application) -> None:
+    """Refresh the shared run once, then send each waiting user THEIR OWN fresh result."""
+    from . import strategy_service as strategy
+
+    factory = application.bot_data["session_factory"]
+    try:
+        try:
+            result = await strategy.refresh_run(application)
+            failure = None if result["status"] == "completed" else "更新没有成功：" + "；".join(result["notes"] or ["行情数据不可用"])
+        except strategy.StrategyUnavailable as exc:
+            failure = str(exc)
+        except Exception as exc:
+            log.exception("check refresh failed")
+            failure = f"更新失败：{type(exc).__name__}"
+        waiters = dict(application.bot_data.get("check_waiters", {}))
+        application.bot_data["check_waiters"] = {}
+        for user_id, telegram_id in waiters.items():
+            try:
+                if failure:
+                    text = failure + "\n稍后可以再用 /check。"
+                else:
+                    with transaction(factory) as session:
+                        row = strategy.latest_completed(session)
+                        text = "✅ <b>已更新</b>\n\n" + strategy.check_text(session, user_id, row, strategy.strategy_settings())
+                await application.bot.send_message(telegram_id, text, parse_mode=ParseMode.HTML)
+            except Exception:
+                log.exception("could not deliver the refreshed check to one user")
+    finally:
+        application.bot_data["check_job_running"] = False
+
+
+signals = check
+
+
+async def cooldown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Shows the caller's own cooldowns only."""
+    from . import strategy_service as strategy
+
+    try:
+        with transaction(context.application.bot_data["session_factory"]) as session:
+            user = _require(session, update, context)
+            blocked, protected = strategy.cooldowns(session, user.id)
+    except PermissionError:
+        await update.message.reply_text("请先使用 /start 注册。")
+        return
+    except strategy.StrategyUnavailable as exc:
+        await update.message.reply_text(str(exc))
+        return
+    await update.message.reply_text(render_cooldowns(blocked, protected, datetime.now(UTC)), parse_mode=ParseMode.HTML)
+
+
+def run_started(row) -> datetime:
+    return row.started_at if row.started_at.tzinfo else row.started_at.replace(tzinfo=UTC)
 
 
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -290,8 +413,9 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if context.args and context.args[0] in {"signals", "announcements"}:
             field = context.args[0] + "_enabled"
             setattr(prefs, field, not getattr(prefs, field))
-        text = f"信号通知：{'开' if prefs.signals_enabled else '关'}\n公告通知：{'开' if prefs.announcements_enabled else '关'}\n切换：/settings signals 或 /settings announcements"
-    await update.message.reply_text(text)
+        text = (f"🔔 <b>通知设置</b>\n每月策略推送：{'开 ✅' if prefs.signals_enabled else '关 ⛔'}\n公告通知：{'开 ✅' if prefs.announcements_enabled else '关 ⛔'}\n\n"
+                "切换：/settings signals 或 /settings announcements")
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
 async def announce_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -345,13 +469,34 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     with transaction(context.application.bot_data["session_factory"]) as session:
         context.application.bot_data["accounts"].require_maintainer(session, update.effective_user.id)
         session.execute(select(1))
-    await update.message.reply_text("OK：Telegram 与数据库可用；量化策略未接入。")
+        from . import strategy_service as strategy
+
+        last = strategy.latest_completed(session)
+        last_text = f"最近一次完成的策略运行：{last.started_at:%Y-%m-%d %H:%M} UTC，行情日期 {last.trading_date}。" if last else "还没有完成的策略运行。"
+    await update.message.reply_text("OK：Telegram 与数据库可用。" + last_text + ("策略每月自动运行已开启。" if context.application.bot_data.get("strategy_autorun") else "策略自动运行未开启（用 /runstrategy 手动运行）。"))
 
 
 async def run_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     with transaction(context.application.bot_data["session_factory"]) as session:
         context.application.bot_data["accounts"].require_maintainer(session, update.effective_user.id)
-    await update.message.reply_text("量化策略未接入，未执行任何分析。")
+    await update.message.reply_text("开始运行策略（首次可能需要十几分钟）。完成后会通知你，并向开启了信号通知的用户发送建议。")
+    context.application.create_task(_run_strategy_job(context.application, update.effective_chat.id), update=update)
+
+
+async def _run_strategy_job(application, chat_id: int) -> None:
+    from . import strategy_service as strategy
+
+    try:
+        result = await strategy.run_and_notify(application)
+        generation = result.get("generation", {})
+        text = (f"策略运行状态：{result['status']}，最后价格日 {result['as_of_bar'] or '无'}，已打分 {result['scored']} 只" + ("（沿用同一天已完成的运行）" if result["reused"] else "") +
+                (f"\n用户 {generation['users']} 人，其中 {generation['with_signals']} 人有新建议，出错 {generation['errors']}；已发送 {result['sent']}，失败 {result['failed']}。" if generation else "\n" + "；".join(result["notes"])))
+    except strategy.StrategyUnavailable as exc:
+        text = str(exc)
+    except Exception as exc:
+        log.exception("strategy run failed")
+        text = f"策略运行失败：{type(exc).__name__}"
+    await application.bot.send_message(chat_id, text)
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -360,27 +505,22 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
-async def process_plans(context: ContextTypes.DEFAULT_TYPE) -> None:
-    with transaction(context.application.bot_data["session_factory"]) as session:
-        count = PlanService().process_due(session)
-    if count:
-        log.info("processed investment plans", extra={"count": count})
-
-
 def configure_application(application: Application, accounts: AccountService, factory) -> Application:
     application.bot_data.update(accounts=accounts, session_factory=factory)
     cancel_handler = CommandHandler("cancel", cancel)
-    application.add_handler(ConversationHandler([CommandHandler("start", start)], {CONTACT: [MessageHandler(filters.CONTACT, contact)]}, fallbacks=[cancel_handler]))
+    application.add_handler(ConversationHandler([CommandHandler("start", start)], {CONTACT: [MessageHandler(filters.CONTACT, contact), MessageHandler(filters.ALL & ~filters.COMMAND, contact_reminder)]}, fallbacks=[cancel_handler]))
     application.add_handler(ConversationHandler([CommandHandler("add", add_start)], {ADD_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_data)]}, fallbacks=[cancel_handler]))
     application.add_handler(ConversationHandler([CommandHandler("edit", edit_start)], {EDIT_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_data)], REMOVE_CONFIRM: [CallbackQueryHandler(edit_confirm, pattern=r"^edit:")]}, fallbacks=[cancel_handler]))
     application.add_handler(ConversationHandler([CommandHandler("remove", remove_start)], {REMOVE_CONFIRM: [CallbackQueryHandler(remove_confirm, pattern=r"^remove:")]}, fallbacks=[cancel_handler]))
     application.add_handler(ConversationHandler([CommandHandler("cash", cash_start)], {CASH_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, cash_data)]}, fallbacks=[cancel_handler]))
-    application.add_handler(ConversationHandler([CommandHandler("plan", plan_start)], {PLAN_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, plan_data)]}, fallbacks=[cancel_handler]))
     application.add_handler(ConversationHandler([CommandHandler("announce", announce_start)], {ANNOUNCE_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, announce_text)], ANNOUNCE_CONFIRM: [CallbackQueryHandler(announce_confirm, pattern=r"^announce:")]}, fallbacks=[cancel_handler]))
-    for command, handler in [("help", help_command), ("portfolio", portfolio), ("import", import_start), ("export", export_command), ("history", history), ("signals", signals), ("settings", settings), ("users", users_command), ("stats", stats_command), ("health", health), ("runstrategy", run_strategy)]:
+    for command, handler in [("help", help_command), ("portfolio", portfolio), ("import", import_start), ("export", export_command), ("history", history), ("check", check), ("signals", signals), ("cooldown", cooldown), ("unbind", unbind_start), ("help_import", help_import), ("help_faq", help_faq), ("settings", settings), ("users", users_command), ("stats", stats_command), ("health", health), ("runstrategy", run_strategy)]:
         application.add_handler(CommandHandler(command, handler))
+    application.add_handler(CallbackQueryHandler(unbind_confirm, pattern=r"^unbind:"))
     application.add_handler(MessageHandler(filters.Document.FileExtension("csv"), csv_document))
     application.add_error_handler(_error)
     if application.job_queue:
-        application.job_queue.run_repeating(process_plans, interval=3600, first=10, name="investment-plans")
+        from .strategy_service import monthly_tick
+
+        application.job_queue.run_repeating(monthly_tick, interval=3600, first=120, name="monthly-strategy")
     return application
