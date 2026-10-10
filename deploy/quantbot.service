@@ -1,0 +1,24 @@
+[Unit]
+Description=Telegram Quant Portfolio Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=quantbot
+Group=quantbot
+WorkingDirectory=/opt/quantbot/app
+EnvironmentFile=/opt/quantbot/app/.env
+ExecStart=/opt/quantbot/app/.venv/bin/quant-bot
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGINT
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/quantbot/app/data /opt/quantbot/app/backups
+
+[Install]
+WantedBy=multi-user.target

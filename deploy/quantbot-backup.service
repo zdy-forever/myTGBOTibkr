@@ -1,0 +1,15 @@
+[Unit]
+Description=Backup Telegram Quant Portfolio SQLite database
+
+[Service]
+Type=oneshot
+User=quantbot
+Group=quantbot
+WorkingDirectory=/opt/quantbot/app
+EnvironmentFile=/opt/quantbot/app/.env
+ExecStart=/opt/quantbot/app/.venv/bin/quant-backup
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/quantbot/app/data /opt/quantbot/app/backups
