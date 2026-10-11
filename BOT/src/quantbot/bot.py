@@ -47,7 +47,7 @@ from .chat import (
 from .csv_io import export_portfolio_csv, import_portfolio_csv
 from .db import transaction
 from .display import price, qty, render_portfolio_pages
-from .help_text import ADMIN_HELP, ADMIN_QUICK, QUICK, QUICK_PENDING, help_for
+from .help_text import ADMIN_HELP, ADMIN_QUICK, QUICK, QUICK_NEW, QUICK_PENDING, help_for
 from .models import (
     AdminGrant,
     AdminPhoneGrant,
@@ -61,13 +61,20 @@ from .models import (
     Transaction,
     User,
 )
-from .services import AccountService, PortfolioService, parse_money_text, system_stats
+from .services import (
+    AccountService,
+    PortfolioService,
+    normalize_exchange,
+    normalize_symbol,
+    parse_money_text,
+    system_stats,
+)
 from .strategy_text import render_cooldowns
 
 log = logging.getLogger(__name__)
 HISTORY_TEXT = {"position_create": "新增持仓", "position_update": "修改持仓", "position_delete": "删除持仓", "cash_set": "设置现金", "cash_adjust": "调整现金",
                 "plan_contribution": "定投入账", "csv_import": "导入 CSV"}
-CONTACT, ADD_DATA, EDIT_DATA, REMOVE_CONFIRM, CASH_DATA, ANNOUNCE_TEXT, ANNOUNCE_CONFIRM, CHAT_TEXT, CHAT_REPLY_TEXT = range(9)
+CONTACT, ADD_DATA, EDIT_DATA, REMOVE_CONFIRM, CASH_DATA, ANNOUNCE_TEXT, ANNOUNCE_CONFIRM, CHAT_TEXT, CHAT_REPLY_TEXT, REMOVE_DATA = range(10)
 
 def _services(context: ContextTypes.DEFAULT_TYPE):
     return context.application.bot_data["accounts"], PortfolioService()
@@ -152,13 +159,21 @@ def _access_text(status: str) -> str:
 
 async def authorization_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """First handler group: no command, callback, document or payment bypasses access control."""
+    # Telegram emits a service message when the bot pins an announcement. It
+    # can appear to be from the bot itself; it is not a user registration attempt.
+    message = update.effective_message
+    if message and (getattr(message, "pinned_message", None) is not None or
+                    getattr(getattr(message, "from_user", None), "is_bot", False)):
+        raise ApplicationHandlerStop
     if update.effective_user is None:
         raise ApplicationHandlerStop
     accounts, _ = _services(context)
     with transaction(context.application.bot_data["session_factory"]) as session:
         status = accounts.access_status(session, update.effective_user.id)
-    message = update.effective_message
-    command = (message.text or "").split(maxsplit=1)[0].split("@", 1)[0].lower() if message and message.text else ""
+    words = (message.text or "").split(maxsplit=1) if message else []
+    command = words[0].split("@", 1)[0].lower() if words else ""
+    if command.startswith("/") and command != "/cancel":
+        getattr(context, "user_data", {}).pop("pending_command_args", None)
     if update.pre_checkout_query:
         if status == "unregistered":
             await update.pre_checkout_query.answer(ok=False, error_message="请先使用 /start 验证本人的 Telegram 手机号。")
@@ -180,7 +195,7 @@ async def authorization_gate(update: Update, context: ContextTypes.DEFAULT_TYPE)
     allowed = {"/start", "/help", "/help_import", "/help_faq", "/privacy", "/cancel"}
     if status != "unregistered":
         allowed.update({"/subscribe", "/unbind", "/chat"})
-        if message and message.successful_payment:
+        if message and getattr(message, "successful_payment", None):
             return
         if update.callback_query and (update.callback_query.data or "").startswith("unbind:"):
             return
@@ -189,6 +204,8 @@ async def authorization_gate(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif message and message.contact:
         return
     if command in allowed:
+        return
+    if not command.startswith("/") and (getattr(context, "user_data", {}) or {}).get("pending_command_args", (None,))[0] == "help":
         return
     if status == "subscription_required":
         await _refresh_user_menu(context.application, update.effective_user.id, status)
@@ -267,6 +284,8 @@ async def contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.message.reply_text(text, reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
     await _refresh_user_menu(context.application, update.effective_user.id, status)
+    if getattr(context, "user_data", None) is not None:
+        context.user_data.pop("pending_command_args", None)
     await update.message.reply_text(
         "✅ <b>注册完成</b>。\n" + _access_text(status) +
         ("\n\n" + (ADMIN_QUICK if status == "admin" else QUICK)
@@ -353,7 +372,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
 def _whitelist_phone(args: list[str]) -> str:
     phone = " ".join(args)
     if not re.fullmatch(r"\+\d{1,3} [0-9 ]{6,20}", phone):
-        raise ValueError("格式：+(国家区号) (手机号)，例如 /whitelist_add +86 13800138000")
+        raise ValueError("格式：+(国家区号) (手机号)，例如 /whitelist_add +(国家区号) (手机号)")
     return phone
 
 
@@ -377,7 +396,7 @@ async def whitelist_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def whitelist_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         if len(context.args) != 2:
-            raise ValueError("用法：/whitelist_remove +86 13800138000")
+            raise ValueError("用法：/whitelist_remove +(国家区号) (手机号)")
         phone = _whitelist_phone(context.args)
         with transaction(context.application.bot_data["session_factory"]) as session:
             target = session.scalar(select(User.telegram_id).where(
@@ -432,7 +451,7 @@ async def whitelist_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def whitelist_show(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         if len(context.args) != 2:
-            raise ValueError("用法：/whitelist_show +86 13800138000")
+            raise ValueError("用法：/whitelist_show +(国家区号) (手机号)")
         phone = _whitelist_phone(context.args)
         accounts, _ = _services(context)
         with transaction(context.application.bot_data["session_factory"]) as session:
@@ -472,7 +491,7 @@ def _admin_target(args: list[str]) -> tuple[str, int | str, int]:
         raise ValueError("请提供数字 Telegram ID 或 +国家区号 手机号；用法见 /admin_help。")
     if args[0].startswith("+"):
         if len(args) < 2:
-            raise ValueError("手机号格式：+国家区号 手机号，例如 +86 13800138000。")
+            raise ValueError("手机号格式：+(国家区号) (手机号)。")
         return "phone", _whitelist_phone(args[:2]), 2
     if not args[0].isascii() or not args[0].isdecimal():
         raise ValueError("请提供数字 Telegram ID 或 +国家区号 手机号；用法见 /admin_help。")
@@ -739,9 +758,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     accounts, _ = _services(context)
     with transaction(context.application.bot_data["session_factory"]) as session:
         status = accounts.access_status(session, update.effective_user.id)
-    text = (QUICK_PENDING if status == "subscription_required" else
+    text = (QUICK_NEW if status == "unregistered" and not context.args else
+            QUICK_PENDING if status == "subscription_required" and not context.args else
             ADMIN_QUICK if status == "admin" and not context.args else
-            help_for(context.args[0] if context.args else None, status != "unregistered"))
+            help_for(context.args[0] if context.args else None, True))
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
@@ -887,12 +907,26 @@ async def edit_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def remove_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not context.args:
-        await update.message.reply_text("用法：/remove 股票代码 [交易所]")
-        return ConversationHandler.END
+        await update.message.reply_text("请在下一条消息输入股票代码 [交易所]，例如 ISRG US。取消请发 /cancel。")
+        return REMOVE_DATA
+    try:
+        if len(context.args) not in (1, 2):
+            raise ValueError("invalid number of arguments")
+        normalize_symbol(context.args[0])
+        if len(context.args) == 2:
+            normalize_exchange(context.args[1])
+    except ValueError:
+        await update.message.reply_text("格式不正确，请输入股票代码 [交易所]，例如 ISRG US。取消请发 /cancel。")
+        return REMOVE_DATA
     symbol, exchange = context.args[0], context.args[1] if len(context.args) > 1 else "US"
     context.user_data["remove"] = (symbol, exchange)
     await update.message.reply_text(f"确认删除 {symbol.upper()}@{exchange.upper()}？", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("确认删除", callback_data="remove:yes"), InlineKeyboardButton("取消", callback_data="remove:no")]]))
     return REMOVE_CONFIRM
+
+
+async def remove_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.args = update.message.text.split()
+    return await remove_start(update, context)
 
 
 async def remove_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -916,8 +950,8 @@ def _sale_cooldown_prompt(session, user_id):
                          .order_by(Transaction.id.desc()).limit(1))
     if row is None or "sale_cooldown" not in (row.after_data or {}):
         return "", None
-    return ("\n\n要把卖出的股票加入冷却期吗？（默认设置：加入）\n"
-            "已默认加入；如果只是修改记录、没有实际卖出，请选择「不加入」。",
+    return (("\n\n要把卖出的股票加入冷却期吗？（默认设置：加入）\n"
+             "已默认加入；如果只是修改记录、没有实际卖出，请选择「不加入」。"),
             InlineKeyboardMarkup([[
                 InlineKeyboardButton("加入（默认）", callback_data=f"sale-cooldown:{row.id}:yes"),
                 InlineKeyboardButton("不加入", callback_data=f"sale-cooldown:{row.id}:no"),
@@ -1115,6 +1149,7 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def chat_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.pop("chat_cancelled_by_command", None)
     try:
         with transaction(context.application.bot_data["session_factory"]) as session:
             accounts = context.application.bot_data["accounts"]
@@ -1132,6 +1167,9 @@ async def chat_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def chat_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if context.user_data.pop("chat_cancelled_by_command", False):
+        await update.message.reply_text("之前的留言输入已取消。如需留言，请重新发送 /chat。")
+        return ConversationHandler.END
     body = (update.message.text or "").strip()
     if not body:
         await update.message.reply_text("留言不能为空，请重新输入。")
@@ -1452,21 +1490,138 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
+_STAGED_REQUIRED = {
+    "whitelist_add": "请输入：+(国家区号) (手机号) [备注]",
+    "whitelist_show": "请输入：+(国家区号) (手机号)",
+    "whitelist_edit": "请输入：+(国家区号) (手机号) 新备注；输入 - 可清空备注",
+    "whitelist_remove": "请输入：+(国家区号) (手机号)",
+    "admin_show": "请输入：(用户ID) 或 +(国家区号) (手机号)",
+    "admin_add": "请输入：(用户ID) [备注]，或 +(国家区号) (手机号) [备注]",
+    "admin_edit": "请输入：(用户ID) 新备注，或 +(国家区号) (手机号) 新备注；输入 - 可清空备注",
+    "admin_remove": "请输入：(用户ID) 或 +(国家区号) (手机号)",
+}
+_STAGED_OPTIONAL = {
+    "whitelist_list": "回复页码可查看其他页",
+    "admin_list": "回复页码可查看其他页",
+    "portfolio": "回复页码可查看其他页",
+    "settings": "回复 signals 或 announcements 可切换通知",
+    "auto_notice_date": "回复 1–23 的交易日序号，或 random 设置每月随机提醒",
+    "help": "回复帮助主题，例如 导入 或 问题",
+}
+
+
+def _validate_command_args(command: str, args: list[str]) -> None:
+    if len(args) > 24:
+        raise ValueError("参数过长。")
+    if command.startswith("whitelist_") and command != "whitelist_list":
+        minimum = 3 if command == "whitelist_edit" else 2
+        if len(args) < minimum or (command in {"whitelist_show", "whitelist_remove"} and len(args) != 2):
+            raise ValueError("手机号和备注格式不完整。")
+        _whitelist_phone(args[:2])
+        if command in {"whitelist_add", "whitelist_edit"}:
+            _admin_label(args[2:], required=command == "whitelist_edit")
+    elif command.startswith("admin_") and command not in {"admin_list", "admin_help"}:
+        _, _, consumed = _admin_target(args)
+        if command in {"admin_show", "admin_remove"} and len(args) != consumed:
+            raise ValueError("此命令只接受一个用户 ID 或一个手机号。")
+        if command in {"admin_add", "admin_edit"}:
+            _admin_label(args[consumed:], required=command == "admin_edit")
+    elif command in {"whitelist_list", "admin_list", "portfolio"}:
+        if len(args) != 1 or not re.fullmatch(r"[1-9][0-9]{0,5}", args[0]):
+            raise ValueError("页码必须是从 1 开始的整数。")
+    elif command == "settings":
+        if args not in (["signals"], ["announcements"]):
+            raise ValueError("只能输入 signals 或 announcements。")
+    elif command == "auto_notice_date":
+        from .strategy_service import parse_notice_day
+        if len(args) != 1:
+            raise ValueError("只接受一个交易日序号或 random。")
+        if args[0].lower() not in {"random", "随机"}:
+            parse_notice_day(args[0])
+    elif command == "help":
+        if len(args) != 1 or len(args[0]) > 32:
+            raise ValueError("一次只能输入一个帮助主题。")
+
+
+async def _staged_command_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    command = update.message.text.split(maxsplit=1)[0].split("@", 1)[0].lower().removeprefix("/")
+    handler = _STAGED_HANDLERS[command]
+    context.user_data.pop("pending_command_args", None)
+    if context.user_data.pop("chat_allowed", None):
+        context.user_data["chat_cancelled_by_command"] = True
+    context.user_data.pop("chat_reply_id", None)
+    context.user_data.pop("chat_reply_callback", None)
+    if context.args:
+        try:
+            _validate_command_args(command, context.args)
+        except ValueError as exc:
+            context.user_data["pending_command_args"] = (command, datetime.now(UTC) + timedelta(minutes=5))
+            await update.message.reply_text(f"{exc}\n{_STAGED_REQUIRED.get(command) or _STAGED_OPTIONAL[command]}。取消请发 /cancel。")
+            return
+        await handler(update, context)
+        return
+    if command in _STAGED_OPTIONAL:
+        await handler(update, context)
+    context.user_data["pending_command_args"] = (command, datetime.now(UTC) + timedelta(minutes=5))
+    await update.message.reply_text(f"{_STAGED_REQUIRED.get(command) or _STAGED_OPTIONAL[command]}。请在下一条消息输入；取消请发 /cancel。")
+
+
+async def _staged_command_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    pending = context.user_data.get("pending_command_args")
+    if not pending:
+        return
+    command, expiry = pending
+    if datetime.now(UTC) >= expiry:
+        context.user_data.pop("pending_command_args", None)
+        await update.message.reply_text(f"输入已过期，请重新发送 /{command}。")
+        return
+    args = update.message.text.split()
+    try:
+        _validate_command_args(command, args)
+    except ValueError as exc:
+        await update.message.reply_text(f"{exc}\n{_STAGED_REQUIRED.get(command) or _STAGED_OPTIONAL[command]}。取消请发 /cancel。")
+        return
+    context.user_data.pop("pending_command_args", None)
+    context.args = args
+    await _STAGED_HANDLERS[command](update, context)
+
+
+async def _staged_command_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.user_data.get("pending_command_args"):
+        return
+    await _staged_command_data(update, context)
+    raise ApplicationHandlerStop
+
+
+_STAGED_HANDLERS = {
+    "whitelist_add": whitelist_add, "whitelist_show": whitelist_show,
+    "whitelist_edit": whitelist_edit, "whitelist_remove": whitelist_remove,
+    "whitelist_list": whitelist_list, "admin_show": admin_show,
+    "admin_add": admin_add, "admin_edit": admin_edit,
+    "admin_remove": admin_remove, "admin_list": admin_list,
+    "portfolio": portfolio, "settings": settings,
+    "auto_notice_date": auto_notice_date, "help": help_command,
+}
+
+
 def configure_application(application: Application, accounts: AccountService, factory) -> Application:
     application.bot_data.update(accounts=accounts, session_factory=factory, enforce_premium=True)
-    application.add_handler(TypeHandler(Update, authorization_gate), group=-1)
+    application.add_handler(TypeHandler(Update, authorization_gate), group=-2)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _staged_command_dispatch), group=-1)
     cancel_handler = CommandHandler("cancel", cancel)
+    application.add_handler(CommandHandler(list(_STAGED_HANDLERS), _staged_command_entry))
     application.add_handler(ConversationHandler([CommandHandler("start", start)], {CONTACT: [MessageHandler(filters.CONTACT, contact), MessageHandler(filters.ALL & ~filters.COMMAND, contact_reminder)]}, fallbacks=[cancel_handler], allow_reentry=True))
     # A contact sent from an older /start keyboard must still work after a restart
     # or a lost conversation state. Once bound, contact() rejects stale prompts.
     application.add_handler(MessageHandler(filters.CONTACT, contact))
     application.add_handler(ConversationHandler([CommandHandler("add", add_start)], {ADD_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_data)]}, fallbacks=[cancel_handler]))
     application.add_handler(ConversationHandler([CommandHandler("edit", edit_start)], {EDIT_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_data)], REMOVE_CONFIRM: [CallbackQueryHandler(edit_confirm, pattern=r"^edit:")]}, fallbacks=[cancel_handler]))
-    application.add_handler(ConversationHandler([CommandHandler("remove", remove_start)], {REMOVE_CONFIRM: [CallbackQueryHandler(remove_confirm, pattern=r"^remove:")]}, fallbacks=[cancel_handler]))
+    application.add_handler(ConversationHandler([CommandHandler("remove", remove_start)], {REMOVE_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_data)], REMOVE_CONFIRM: [CallbackQueryHandler(remove_confirm, pattern=r"^remove:")]}, fallbacks=[cancel_handler]))
     application.add_handler(ConversationHandler([CommandHandler("cash", cash_start)], {CASH_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, cash_data)]}, fallbacks=[cancel_handler]))
     application.add_handler(ConversationHandler([CommandHandler(["announce", "important_announce"], announce_start)], {ANNOUNCE_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, announce_text)], ANNOUNCE_CONFIRM: [CallbackQueryHandler(announce_confirm, pattern=r"^announce:")]}, fallbacks=[cancel_handler]))
-    application.add_handler(ConversationHandler([CommandHandler("chat", chat_start)], {CHAT_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, chat_text)]}, fallbacks=[cancel_handler]))
+    application.add_handler(ConversationHandler([CommandHandler("chat", chat_start)], {CHAT_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, chat_text)]}, fallbacks=[cancel_handler], allow_reentry=True))
     application.add_handler(ConversationHandler([CallbackQueryHandler(chat_reply_start, pattern=r"^chat-reply:")], {CHAT_REPLY_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, chat_reply_text)]}, fallbacks=[cancel_handler]))
+    application.add_handler(CommandHandler("cancel", cancel))
     for command, handler in [("help", help_command), ("privacy", privacy), ("subscribe", subscribe),
                              ("admin_help", admin_help), ("admin_list", admin_list), ("admin_show", admin_show),
                              ("admin_add", admin_add), ("admin_edit", admin_edit), ("admin_remove", admin_remove),
@@ -1474,12 +1629,12 @@ def configure_application(application: Application, accounts: AccountService, fa
                              ("whitelist_show", whitelist_show), ("whitelist_edit", whitelist_edit),
                              ("whitelist_remove", whitelist_remove),
                              ("portfolio", portfolio), ("import", import_start), ("export", export_command), ("history", history), ("check", check), ("signals", signals), ("cooldown", cooldown), ("unbind", unbind_start), ("help_import", help_import), ("help_faq", help_faq), ("settings", settings), ("users", users_command), ("stats", stats_command), ("health", health), ("runstrategy", run_strategy)]:
-        application.add_handler(CommandHandler(command, handler))
+        if command not in _STAGED_HANDLERS:
+            application.add_handler(CommandHandler(command, handler))
     application.add_handler(PreCheckoutQueryHandler(pre_checkout))
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     application.add_handler(CallbackQueryHandler(unbind_confirm, pattern=r"^unbind:"))
     application.add_handler(CallbackQueryHandler(portfolio_page, pattern=r"^portfolio:"))
-    application.add_handler(CommandHandler("auto_notice_date", auto_notice_date))
     application.add_handler(CallbackQueryHandler(sale_cooldown_confirm, pattern=r"^sale-cooldown:\d+:(yes|no)$"))
     application.add_handler(MessageHandler(filters.Document.FileExtension("csv"), csv_document))
     application.add_error_handler(_error)

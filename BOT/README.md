@@ -37,7 +37,7 @@ Bot 使用 Long Polling，无需域名、Webhook 或反向代理。启动前必�
 
 - `/start` 在私聊要求本人分享 Telegram Contact，验证 `user_id`、有效号码并标准化 E.164 后才注册；未注册时每次发送都会重新提示，已注册不重复建档。随后依次检查管理员白名单、付费订阅；均不满足时仅可使用注册、隐私、订阅、留言和解绑相关命令。
 - `/subscribe`：验证手机号后开通 400 Telegram Stars / 30 天的自动续订；付款成功才激活。`/privacy` 查看隐私说明。
-- 管理员用 `/whitelist_add +86 13800138000 [备注]`、`/whitelist_edit +86 13800138000 备注`、`/whitelist_remove +86 13800138000` 管理免费 Premium 名单；`/whitelist_list [页码]` 每页查看 10 项，`/whitelist_show +86 13800138000` 精确查询。列表仅显示指纹摘要，不存完整号码；变更立即影响已绑定用户。管理员也必须先完成本人手机号验证。
+- 管理员用 `/whitelist_add +(国家区号) (手机号) [备注]`、`/whitelist_edit +(国家区号) (手机号) 备注`、`/whitelist_remove +(国家区号) (手机号)` 管理免费 Premium 名单；`/whitelist_list [页码]` 每页查看 10 项，`/whitelist_show +(国家区号) (手机号)` 精确查询。可先单独发送命令，再在下一条消息输入参数；输入错误会提示重试，`/cancel` 取消。列表仅显示指纹摘要，不存完整号码；变更立即影响已绑定用户。管理员也必须先完成本人手机号验证。
 - 管理员 `/announce` 发布普通公告（尊重公告开关与 Premium 权限）；`/important_announce` 经预览确认后向所有已验证用户发送并逐一置顶，不受普通公告开关或 Premium 状态影响。下一条重要公告成功置顶后，会撤下该用户聊天里的上一条重要公告置顶；普通公告和用户自行置顶的消息不受影响。发送、置顶及失败状态保存在数据库，管理员会收到完成统计。
 - `/portfolio`、`/add`、`/edit`、`/remove`：在私聊查看及修改本人的持仓。持仓较多时 `/portfolio` 分页显示，可点击翻页按钮或发送 `/portfolio 2`；修改显示前后值，删除和修改均需按钮确认。
 - `/cash`：现金余额和币种。
@@ -51,7 +51,7 @@ Bot 使用 Long Polling，无需域名、Webhook 或反向代理。启动前必�
 - `/unbind`：用户自己解绑：确认后删除手机号绑定、持仓、现金、定投计划、操作记录和建议（不能撤销，建议先 `/export`），之后可以用 `/start` 重新绑定同一个或另一个手机号。确认按钮只对生成时的账户有效；重新注册后旧按钮会失效。
 - `/help`：按当前权限显示可用命令；未绑定者只看到绑定方法，已绑定但未开通者只看到订阅等入口。主题快捷命令 `/help_import`（CSV 导入格式）、`/help_faq`（常见问题）可以直接点击；Telegram 的命令名只能用英文字母、数字和下划线，所以不能用中文，旧写法 `/help 导入`、`/help 问题` 仍然有效。评分方法和规则细节不对用户公开，没有对应主题，`/check` 只展示排名，不展示分数。
 - 消息用 Telegram HTML 格式排版（粗体标题、等宽对齐的表格），所有动态内容都经过转义，测试会检查标签配对和转义。
-- 管理员：`/admin_help` 查看完整说明书；`/admin_list`、`/admin_show ID`、`/admin_add ID [备注]`、`/admin_edit ID 备注`、`/admin_remove ID` 管理普通管理员。四条增删查改命令也接受 `+国家区号 手机号`，例如 `/admin_add +86 13800138000 张三`。手机号只保存 HMAC 指纹，尚未绑定时授权待生效；本人验证后绑定到该 Telegram ID，换号持有人不会自动继承。按 ID 与手机号授权相互独立。另可用 `/announce`、`/users`、`/stats`、`/health`、`/runstrategy`。普通管理员不能增删改 Bot Owner，Owner 也必须先验证手机号。权限每次从 SQLite 名单校验，撤销后立即生效。
+- 管理员：`/admin_help` 查看完整说明书；`/admin_list`、`/admin_show (用户ID)`、`/admin_add (用户ID) [备注]`、`/admin_edit (用户ID) 备注`、`/admin_remove (用户ID)` 管理普通管理员。四条增删查改命令也接受 `+(国家区号) (手机号)`；需要参数的命令支持先发命令、再发参数，`/cancel` 取消。手机号只保存 HMAC 指纹，尚未绑定时授权待生效；本人验证后绑定到该 Telegram ID，换号持有人不会自动继承。按 ID 与手机号授权相互独立。另可用 `/announce`、`/important_announce`、`/users`、`/stats`、`/health`、`/runstrategy`。普通管理员不能增删改 Bot Owner，Owner 也必须先验证手机号。权限每次从 SQLite 名单校验，撤销后立即生效。
 
 `BOT_OWNER_TELEGRAM_ID` 必须设置为 Owner 本人的数字 Telegram ID，否则 Bot 拒绝启动。首次升级后启动时，旧 `MAINTAINER_TELEGRAM_IDS` 会一次性导入 SQLite；之后修改此环境变量不会覆盖通过命令做的增删。管理员变更及备注随 SQLite 备份持久保存。新加的管理员必须自己完成 `/start` 手机号验证后才可使用管理命令。
 

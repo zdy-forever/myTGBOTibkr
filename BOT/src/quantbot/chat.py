@@ -12,7 +12,7 @@ from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
 from .db import transaction
-from .models import ChatDelivery, ChatMessage
+from .models import AdminGrant, AdminPhoneGrant, ChatDelivery, ChatMessage, PhoneWhitelist, User
 
 log = logging.getLogger(__name__)
 RETENTION_DAYS = 14
@@ -39,6 +39,22 @@ def create_message(session, user_id: str, body: str, maintainers: frozenset[int]
     return message
 
 
+def _sender_note(session, user_id: str) -> str:
+    """Show the sender's whitelist/admin labels only to message recipients."""
+    user = session.get(User, user_id)
+    if user is None:
+        return ""
+    whitelist = session.get(PhoneWhitelist, user.phone_fingerprint)
+    admin = session.get(AdminGrant, user.telegram_id)
+    phone_admin = session.get(AdminPhoneGrant, user.phone_fingerprint)
+    whitelist_label = (whitelist.label or "").strip() if whitelist else ""
+    admin_label = (admin.label or "").strip() if admin else ""
+    if not admin_label and phone_admin and phone_admin.telegram_id == user.telegram_id:
+        admin_label = (phone_admin.label or "").strip()
+    labels = [label for label in (whitelist_label, admin_label) if label]
+    return f"备注：({escape('/'.join(labels))})\n" if labels else ""
+
+
 def purge_expired_chat_messages(factory, now: datetime | None = None) -> int:
     """Delete messages at least 14 days old; delivery rows cascade with them."""
     with transaction(factory) as session:
@@ -60,9 +76,10 @@ async def deliver_chat_messages(application, message_id: int | None = None) -> t
                      .where(ChatDelivery.delivered_at.is_(None), ChatDelivery.attempts < MAX_ATTEMPTS))
             if message_id is not None:
                 query = query.where(ChatDelivery.message_id == message_id)
-            rows = session.execute(query.order_by(ChatDelivery.id)).all()
+            rows = [(delivery, message, _sender_note(session, message.user_id))
+                    for delivery, message in session.execute(query.order_by(ChatDelivery.id)).all()]
         sent = failed = 0
-        for delivery, message in rows:
+        for delivery, message, sender_note in rows:
             if application.bot_data.get("enforce_premium"):
                 with transaction(factory) as session:
                     accounts = application.bot_data["accounts"]
@@ -70,6 +87,7 @@ async def deliver_chat_messages(application, message_id: int | None = None) -> t
                         continue
             created = message.created_at if message.created_at.tzinfo else message.created_at.replace(tzinfo=UTC)
             text = (f"💬 <b>用户留言 #{message.id}</b>\n"
+                    f"{sender_note}"
                     f"时间：{created.astimezone(ZoneInfo('Asia/Shanghai')):%Y-%m-%d %H:%M}（北京时间）\n\n"
                     f"{escape(message.body)}")
             error = None

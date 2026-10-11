@@ -195,6 +195,107 @@ async def test_admin_phone_commands(factory):
         assert not accounts.is_maintainer(session, 400)
 
 
+async def test_whitelist_command_accepts_followup_message_validates_and_cancels(factory):
+    from quantbot.models import PhoneWhitelist
+
+    accounts = configured_accounts()
+    with transaction(factory) as session:
+        accounts.register(session, 999, "+61400000999")
+    ctx = context(factory, accounts)
+    command = Message("/whitelist_add")
+    await bot._staged_command_entry(update(command, 999), ctx)
+    assert "下一条消息" in command.replies[0][0]
+    assert "+(国家区号) (手机号)" in command.replies[0][0]
+    invalid = Message("不是手机号")
+    await bot._staged_command_data(update(invalid, 999), ctx)
+    assert "手机号和备注格式不完整" in invalid.replies[0][0]
+    assert "pending_command_args" in ctx.user_data
+    with transaction(factory) as session:
+        assert session.query(PhoneWhitelist).count() == 0
+    detail = Message("+86 13800138000 测试备注")
+    with pytest.raises(ApplicationHandlerStop):
+        await bot._staged_command_dispatch(update(detail, 999), ctx)
+    assert "已添加" in detail.replies[0][0]
+    with transaction(factory) as session:
+        assert session.query(PhoneWhitelist).one().label == "测试备注"
+    assert "pending_command_args" not in ctx.user_data
+    await bot._staged_command_entry(update(Message("/whitelist_remove"), 999), ctx)
+    await bot.cancel(update(Message("/cancel"), 999), ctx)
+    assert "pending_command_args" not in ctx.user_data
+    await bot._staged_command_data(update(Message("+86 13800138000"), 999), ctx)
+    with transaction(factory) as session:
+        assert session.query(PhoneWhitelist).count() == 1
+
+
+async def test_admin_command_followup_rejects_extra_args(factory):
+    accounts = configured_accounts()
+    with transaction(factory) as session:
+        accounts.register(session, 999, "+61400000999")
+    ctx = context(factory, accounts)
+    await bot._staged_command_entry(update(Message("/admin_show"), 999), ctx)
+    invalid = Message("400 多余内容")
+    await bot._staged_command_data(update(invalid, 999), ctx)
+    assert "只接受一个用户 ID" in invalid.replies[0][0]
+    assert "pending_command_args" in ctx.user_data
+    valid = Message("400")
+    await bot._staged_command_data(update(valid, 999), ctx)
+    assert "Telegram ID" in valid.replies[0][0]
+
+
+async def test_optional_settings_followup_and_remove_followup(factory):
+    from quantbot.models import NotificationPreference
+
+    accounts = configured_accounts()
+    with transaction(factory) as session:
+        user = accounts.register(session, 999, "+61400000999").user
+        user_id = user.id
+    ctx = context(factory, accounts)
+    command = Message("/settings")
+    await bot._staged_command_entry(update(command, 999), ctx)
+    assert "通知设置" in command.replies[0][0] and "下一条消息" in command.replies[1][0]
+    invalid = Message("off")
+    await bot._staged_command_data(update(invalid, 999), ctx)
+    assert "只能输入 signals" in invalid.replies[0][0]
+    await bot._staged_command_data(update(Message("signals"), 999), ctx)
+    with transaction(factory) as session:
+        assert not session.get(NotificationPreference, user_id).signals_enabled
+    ctx.args = []
+    assert await bot.remove_start(update(Message("/remove"), 999), ctx) == bot.REMOVE_DATA
+    assert await bot.remove_data(update(Message("too many pieces here"), 999), ctx) == bot.REMOVE_DATA
+    assert await bot.remove_data(update(Message("ISRG US"), 999), ctx) == bot.REMOVE_CONFIRM
+
+
+async def test_staged_admin_input_still_checks_current_authorization(factory):
+    accounts = configured_accounts()
+    with transaction(factory) as session:
+        accounts.bootstrap_admins(session)
+        accounts.register(session, 999, "+61400000999")
+        accounts.register(session, 200, "+61400000200")
+    ctx = context(factory, accounts)
+    await bot._staged_command_entry(update(Message("/admin_add"), 200), ctx)
+    with transaction(factory) as session:
+        assert accounts.admin_remove(session, 999, 200)
+    detail = Message("400")
+    with pytest.raises(ApplicationHandlerStop):
+        await bot.authorization_gate(update(detail, 200), ctx)
+    with transaction(factory) as session:
+        assert session.get(AdminGrant, 400) is None
+
+
+async def test_new_command_abandons_previous_staged_input(factory):
+    accounts = configured_accounts()
+    with transaction(factory) as session:
+        accounts.register(session, 999, "+61400000999")
+    ctx = context(factory, accounts)
+    await bot._staged_command_entry(update(Message("/whitelist_add"), 999), ctx)
+    assert "pending_command_args" in ctx.user_data
+    await bot.authorization_gate(update(Message("/remove"), 999), ctx)
+    assert "pending_command_args" not in ctx.user_data
+    detail = Message("ISRG US")
+    await bot._staged_command_dispatch(update(detail, 999), ctx)
+    assert not detail.replies
+
+
 async def test_whitelist_pages_notes_and_exact_lookup(factory):
     from quantbot.models import PhoneWhitelist
 

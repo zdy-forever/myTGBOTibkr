@@ -1,13 +1,20 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import func, select
 from telegram.error import Forbidden
 from telegram.ext import ConversationHandler
 
 from quantbot import bot
-from quantbot.chat import MAX_ATTEMPTS, deliver_chat_messages, purge_expired_chat_messages, reply_callback_data
-from quantbot.models import ChatDelivery, ChatMessage
+from quantbot.chat import (
+    MAX_ATTEMPTS,
+    create_message,
+    deliver_chat_messages,
+    purge_expired_chat_messages,
+    reply_callback_data,
+)
+from quantbot.models import AdminGrant, AdminPhoneGrant, ChatDelivery, ChatMessage, PhoneWhitelist
 from tests.test_strategy_service import add_user
 
 
@@ -94,6 +101,48 @@ async def test_bound_user_can_leave_persisted_message_and_admin_can_reply_after_
         stored = session.get(ChatMessage, message_id)
         assert stored.reply_body == "管理员回复内容" and stored.replied_by_telegram_id == 999 and stored.replied_at
     assert "已回复" in reply_message.texts[-1][0]
+
+
+@pytest.mark.parametrize(
+    ("whitelist_label", "admin_label", "phone_admin_label", "expected"),
+    [
+        (None, None, None, None),
+        ("白名单备注", None, None, "备注：(白名单备注)"),
+        (None, "管理员备注", None, "备注：(管理员备注)"),
+        (None, None, "手机号管理员备注", "备注：(手机号管理员备注)"),
+        ("白名单<&>", "管理员<&>", None, "备注：(白名单&lt;&amp;&gt;/管理员&lt;&amp;&gt;)"),
+    ],
+)
+async def test_admin_receives_sender_notes(factory, accounts, whitelist_label, admin_label, phone_admin_label, expected):
+    user_id = add_user(factory, 1)
+    with factory.begin() as session:
+        if whitelist_label is not None:
+            session.add(PhoneWhitelist(phone_fingerprint="fp1", label=whitelist_label, created_by_telegram_id=999))
+        if admin_label is not None:
+            session.add(AdminGrant(telegram_id=1, label=admin_label, created_by_telegram_id=999))
+        if phone_admin_label is not None:
+            session.add(AdminPhoneGrant(phone_fingerprint="fp1", telegram_id=1,
+                                        label=phone_admin_label, created_by_telegram_id=999))
+        create_message(session, user_id, "留言内容", frozenset({999}))
+    app = App(factory, accounts)
+    assert await deliver_chat_messages(app) == (1, 0)
+    notification = app.bot.sent[0][1]
+    if expected is None:
+        assert "备注：" not in notification
+    else:
+        assert expected in notification
+    assert "留言内容" in notification
+
+
+async def test_unclaimed_admin_phone_note_is_not_shown(factory, accounts):
+    user_id = add_user(factory, 1)
+    with factory.begin() as session:
+        session.add(AdminPhoneGrant(phone_fingerprint="fp1", telegram_id=2,
+                                    label="别人的备注", created_by_telegram_id=999))
+        create_message(session, user_id, "留言内容", frozenset({999}))
+    app = App(factory, accounts)
+    assert await deliver_chat_messages(app) == (1, 0)
+    assert "备注：" not in app.bot.sent[0][1]
 
 
 async def test_chat_requires_binding_and_configured_admin(factory, accounts):

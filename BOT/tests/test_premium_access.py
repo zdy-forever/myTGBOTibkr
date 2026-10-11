@@ -47,6 +47,7 @@ async def test_unverified_start_and_contact_evidence(factory, accounts):
     assert "分享我的手机号" in first.replies[0][0]
     assert first.replies[0][1]["reply_markup"].keyboard[0][0].request_contact
 
+
     typed = Message(text="+61 400 000 001")
     with pytest.raises(ApplicationHandlerStop):
         await bot.authorization_gate(make_update(typed), ctx)
@@ -75,6 +76,30 @@ async def test_unverified_start_and_contact_evidence(factory, accounts):
         assert user.phone_encrypted is None
         assert accounts.is_registered(session, 101)
         assert not accounts.has_premium_access(session, 101)
+
+
+async def test_pinned_service_message_does_not_trigger_registration_reply(factory, accounts):
+    pinned = Message(text=None)
+    pinned.pinned_message = Message(text="important")
+    with pytest.raises(ApplicationHandlerStop):
+        await bot.authorization_gate(make_update(pinned), context(factory, accounts))
+    assert not pinned.replies
+    bot_origin = Message(text=None)
+    bot_origin.from_user.is_bot = True
+    with pytest.raises(ApplicationHandlerStop):
+        await bot.authorization_gate(make_update(bot_origin), context(factory, accounts))
+    assert not bot_origin.replies
+
+
+async def test_unregistered_user_can_send_help_topic_as_followup(factory, accounts):
+    ctx = context(factory, accounts)
+    ctx.user_data = {}
+    command = Message(text="/help")
+    await bot._staged_command_entry(make_update(command), ctx)
+    topic = Message(text="导入")
+    await bot.authorization_gate(make_update(topic), ctx)
+    await bot._staged_command_data(make_update(topic), ctx)
+    assert topic.replies and "CSV" in topic.replies[0][0]
 
 
 async def test_whitelist_immediately_activates_and_keeps_existing_data(factory, accounts):
@@ -308,8 +333,8 @@ def test_gate_is_first_and_monthly_jobs_skip_nonpremium(factory, accounts):
 
     app = Application.builder().token("123456:TEST").build()
     bot.configure_application(app, accounts, factory)
-    assert isinstance(app.handlers[-1][0], TypeHandler)
-    assert app.handlers[-1][0].callback is bot.authorization_gate
+    assert isinstance(app.handlers[-2][0], TypeHandler)
+    assert app.handlers[-2][0].callback is bot.authorization_gate
 
     with transaction(factory) as session:
         accounts.register(session, 999, "+61400000999")

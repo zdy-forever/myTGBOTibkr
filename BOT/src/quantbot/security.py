@@ -10,7 +10,7 @@ from cryptography.fernet import Fernet
 
 def normalize_phone(phone: str) -> str:
     if not isinstance(phone, str):
-        raise ValueError("请输入含国家区号的有效手机号，例如 +86 13800138000")
+        raise ValueError("请输入含国家区号的有效手机号，格式：+(国家区号) (手机号)")  # noqa: TRY004 - invalid user input is a ValueError
     value = phone.strip()
     # Telegram clients can omit the leading '+' while still sending the
     # international number. Never guess a region for a national-only number.
@@ -19,9 +19,9 @@ def normalize_phone(phone: str) -> str:
     try:
         parsed = phonenumbers.parse(value, None)
     except (AttributeError, phonenumbers.NumberParseException) as exc:
-        raise ValueError("请输入含国家区号的有效手机号，例如 +86 13800138000") from exc
+        raise ValueError("请输入含国家区号的有效手机号，格式：+(国家区号) (手机号)") from exc
     if not phonenumbers.is_valid_number(parsed):
-        raise ValueError("请输入含国家区号的有效手机号，例如 +86 13800138000")
+        raise ValueError("请输入含国家区号的有效手机号，格式：+(国家区号) (手机号)")
     return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
 
 

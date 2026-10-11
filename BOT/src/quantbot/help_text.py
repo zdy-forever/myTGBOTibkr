@@ -44,6 +44,7 @@ QUICK = f"""📘 <b>快速上手</b>
 
 {LINE}
 🧭 <b>全部命令</b>（点命令名就能发送）
+需要参数的命令可先单独发送，再在下一条消息输入参数；输入有误会提示重试，/cancel 可取消。
 
 📊 <b>查看</b>（直接发送，不需要参数）
 /check　今天的排名和你的买卖建议
@@ -77,29 +78,30 @@ QUICK = f"""📘 <b>快速上手</b>
 ADMIN_QUICK = QUICK + "\n\n🛡️ <b>管理员</b>\n/admin_help　查看管理员命令说明书"
 
 ADMIN_HELP = """🛡️ <b>管理员说明书</b>
+需要参数的命令可先单独发送，再在下一条消息输入参数；输入有误会提示重试，/cancel 可取消。下列括号是占位符，请换成实际值。
 
 <b>管理员名单</b>
 /admin_list　分页列出 Bot Owner 和所有管理员；/admin_list 2 查看第 2 页
-/admin_show 123456789　按 Telegram ID 查询管理员
-/admin_add 123456789 张三　按 Telegram ID 添加管理员（备注可省略）
-/admin_edit 123456789 新备注　修改备注；用 <code>-</code> 清空
-/admin_remove 123456789　移除这项 ID 授权
+/admin_show (用户ID)　按 Telegram ID 查询管理员
+/admin_add (用户ID) [备注]　按 Telegram ID 添加管理员（备注可省略）
+/admin_edit (用户ID) 新备注　修改备注；用 <code>-</code> 清空
+/admin_remove (用户ID)　移除这项 ID 授权
 
 以上四条也接受手机号，例如：
-<code>/admin_add +86 13800138000 张三</code>
-<code>/admin_show +86 13800138000</code>
-<code>/admin_edit +86 13800138000 新备注</code>
-<code>/admin_remove +86 13800138000</code>
+<code>/admin_add +(国家区号) (手机号) [备注]</code>
+<code>/admin_show +(国家区号) (手机号)</code>
+<code>/admin_edit +(国家区号) (手机号) 新备注</code>
+<code>/admin_remove +(国家区号) (手机号)</code>
 手机号只保存 HMAC 指纹。对方尚未验证时，授权待生效；本人验证后绑定到该 Telegram ID。号码换人不会自动转移权限，须移除旧授权再重新添加。ID 与手机号是独立授权，移除其中一项不影响另一项。
 
 普通管理员可以管理其他普通管理员，但不能添加、修改或移除 Bot Owner。Owner 的 ID 只能在服务器配置中设置。新管理员仍须先用 /start 验证本人手机号。
 
 <b>免费白名单</b>
 /whitelist_list　每页 10 项；<code>/whitelist_list 2</code> 查看第 2 页
-/whitelist_show +86 13800138000　查询号码是否在白名单及其备注
-/whitelist_add +86 13800138000 张三　添加手机号到免费 Premium 白名单，备注可省略
-/whitelist_edit +86 13800138000 新备注　修改备注；用 <code>-</code> 清空
-/whitelist_remove +86 13800138000　移除手机号
+/whitelist_show +(国家区号) (手机号)　查询号码是否在白名单及其备注
+/whitelist_add +(国家区号) (手机号) [备注]　添加手机号到免费 Premium 白名单，备注可省略
+/whitelist_edit +(国家区号) (手机号) 新备注　修改备注；用 <code>-</code> 清空
+/whitelist_remove +(国家区号) (手机号)　移除手机号
 必须写国家区号与手机号；机器人只保存 HMAC 指纹，列表不会还原显示完整号码。
 
 <b>运营与维护</b>

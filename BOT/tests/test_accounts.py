@@ -96,7 +96,7 @@ async def test_repeated_start_and_old_phone_prompts(factory, accounts):
 def test_start_handler_accepts_reentry_and_old_contact(factory, accounts):
     app = Application.builder().token("123456:TEST").build()
     bot.configure_application(app, accounts, None)
-    start_handler = app.handlers[0][0]
+    start_handler = app.handlers[0][1]
     assert isinstance(start_handler, ConversationHandler)
     assert start_handler.allow_reentry
     assert any(isinstance(handler, MessageHandler) and handler.callback is bot.contact
