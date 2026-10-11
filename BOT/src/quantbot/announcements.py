@@ -23,6 +23,9 @@ async def publish_announcement(application, announcement_id: int) -> tuple[int, 
                 User.is_active, NotificationPreference.announcements_enabled
             )
         ).all()
+        if application.bot_data.get("enforce_premium"):
+            accounts = application.bot_data["accounts"]
+            users = [user for user in users if accounts.has_premium_access(session, user.telegram_id)]
         for user in users:
             exists = session.scalar(select(AnnouncementDelivery.id).where(
                 AnnouncementDelivery.announcement_id == announcement.id,
@@ -45,6 +48,11 @@ async def publish_announcement(application, announcement_id: int) -> tuple[int, 
         if not pending:
             break
         for delivery, user in pending:
+            if application.bot_data.get("enforce_premium"):
+                with transaction(factory) as session:
+                    if not application.bot_data["accounts"].has_premium_access(session, user.telegram_id):
+                        session.get(AnnouncementDelivery, delivery.id).attempts = 5
+                        continue
             error = None
             try:
                 while True:

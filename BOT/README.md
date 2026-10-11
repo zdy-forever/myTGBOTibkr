@@ -6,7 +6,9 @@
 
 ## 安全与数据模型
 
-- `users`：UUID 内部主键、Telegram ID、带服务器密钥的手机号 HMAC 指纹、可选 Fernet 密文、角色。
+- `users`：UUID 内部主键、Telegram ID、带服务器密钥的手机号 HMAC 指纹、角色；不保存完整手机号。
+- `phone_whitelist`、`premium_subscriptions`、`subscription_payments`：免费授权名单、订阅到期时间和幂等付款记录。
+- `admin_grants`、`admin_phone_grants`、`admin_bootstrap`：按 ID 或手机号指纹授权的管理员名单，以及一次性导入旧配置的标记；Bot Owner 的 ID 只保存在服务器配置中。
 - `positions`：按 `(user_id, symbol, exchange)` 唯一；股数 `Numeric(24,10)`，成本 `Numeric(20,8)`。
 - `cash_accounts`：余额、币种、现金管理模式，和持仓分离。
 - `investment_plans`：投入金额、周期、下次执行时间、启用状态。
@@ -15,7 +17,7 @@
 - `announcements` / `announcement_deliveries`：公告和逐用户投递结果。
 - `strategy_runs` / `signals` / `user_signals`：策略集成表，用法见「策略接入」。
 
-SQLite 启用 foreign keys、WAL 和 `synchronous=NORMAL`。手机号默认不保存可恢复内容；`PHONE_ENCRYPTION_KEY` 留空时只保存 HMAC 指纹。手机号已绑定另一个 Telegram ID 时拒绝自动重绑，避免号码回收或盗号导致接管；恢复需管理员线下核验后执行专门迁移。
+SQLite 启用 foreign keys、WAL 和 `synchronous=NORMAL`。新绑定只保存手机号 HMAC 指纹；旧版可选的加密手机号字段不会在本次升级中自动删除，以免破坏现有数据。手机号已绑定另一个 Telegram ID 时拒绝自动重绑，避免号码回收或盗号导致接管；恢复需管理员线下核验后执行专门迁移。
 
 ## 本地运行
 
@@ -23,7 +25,7 @@ SQLite 启用 foreign keys、WAL 和 `synchronous=NORMAL`。手机号默认不�
 python3.11 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 cp .env.example .env
-# 编辑 .env；生成 PHONE_HMAC_SECRET 和可选 PHONE_ENCRYPTION_KEY
+# 编辑 .env；生成 PHONE_HMAC_SECRET（新绑定不保存可逆手机号）
 .venv/bin/alembic upgrade head
 .venv/bin/pytest -q
 .venv/bin/quant-bot
@@ -33,19 +35,24 @@ Bot 使用 Long Polling，无需域名、Webhook 或反向代理。启动前必�
 
 ## 命令与交互
 
-- `/start` 验证 Telegram Contact 的 `user_id` 后注册；重复执行直接加载账户。
-- `/portfolio`、`/add`、`/edit`、`/remove`：查看及修改本人的持仓。修改显示前后值，删除和修改均需按钮确认。
+- `/start` 在私聊要求本人分享 Telegram Contact，验证 `user_id`、有效号码并标准化 E.164 后才注册；未注册时每次发送都会重新提示，已注册不重复建档。随后依次检查管理员白名单、付费订阅；均不满足时仅可使用注册、隐私、订阅、留言和解绑相关命令。
+- `/subscribe`：验证手机号后开通 400 Telegram Stars / 30 天的自动续订；付款成功才激活。`/privacy` 查看隐私说明。
+- 管理员 `/whitelist_add +86 13800138000`、`/whitelist_remove +86 13800138000` 管理免费 Premium 名单；变更立即影响已绑定用户。管理员也必须先完成本人手机号验证。
+- `/portfolio`、`/add`、`/edit`、`/remove`：在私聊查看及修改本人的持仓。持仓较多时 `/portfolio` 分页显示，可点击翻页按钮或发送 `/portfolio 2`；修改显示前后值，删除和修改均需按钮确认。
 - `/cash`：现金余额和币种。
 - `/plan` 命令已移除（没有入口创建或取消定投，后台的定投扫描任务也已停用）；`investment_plans` 表和 `PlanService` 代码保留。
 - `/import` 后发送 CSV；`/export` 下载 CSV。导入在单一事务中先验证后写入。
 - `/history`：最近 20 条账户操作；`/settings`：切换通知。
+- `/chat`：已绑定用户给服务器白名单中的管理员留言，管理员可从通知按钮回复。留言和回复最多 2000 字，在数据库中保存 14 天后自动删除；管理员通知发送失败会每小时重试、每位管理员最多 5 次。Bot 重启后，14 天内尚存在的留言仍可回复；用户解绑时相关留言立即级联删除。
 - `/auto_notice_date 5`：将自己的每月自动通知设为第 5 个美股交易日，默认第 1 个。只接受 1–23 的整数；无参数查看设置。回复明确列出本月、下个月能否生效及对应日期，并核实从本月起 12 个月中首次和全部交易日不足的月份；日历缺失或超出范围会标注尚未确认。交易日不足则跳过该月，不提前或顺延；当月日期已过不补发，已经处理过的当月不重复通知。设置不影响其他用户，也不自动打开通知开关。
 - `/check`（旧名 `/signals` 仍可用）：显示买入股票池排名前 10、自己的持仓排名，以及个人买卖建议。更新时间显示北京时间；持仓显示占比按股票市值计算，不含现金。锁表示暂不符合买入条件，不等于冷却期。池外持仓补充行情与财报后参与个人评分和卖出判断，不加入买入池；数据不足则标明无法评分。操作建议只显示买卖方向、股票、金额和估算股数，不附排名、策略类型或额外候选列表。共享数据超过 12 小时、策略版本改变或新增持仓尚未分析时，先显示旧结果，再后台更新（受重试间隔限制）。
 - `/cooldown`：查看自己当前冷却中的股票，不显示期限或到期日期。用 `/edit` 减少股数或 `/remove` 删除持仓后，系统询问是否把卖出的股票加入冷却期（默认设置：加入）；只是改错可选「不加入」。以确认持仓更新的时间记录卖出，不从策略建议生成时间起算。
-- `/unbind`：用户自己解绑：确认后删除手机号绑定、持仓、现金、定投计划、操作记录和建议（不能撤销，建议先 `/export`），之后可以用 `/start` 重新绑定同一个或另一个手机号。只会删除按按钮的人自己的账号。
-- `/help`：新手教程（已绑定的用户看到的快速上手没有绑定那一步；没绑定的人只看到怎么开始）。主题快捷命令 `/help_import`（CSV 导入格式）、`/help_faq`（常见问题）可以直接点击；Telegram 的命令名只能用英文字母、数字和下划线，所以不能用中文，旧写法 `/help 导入`、`/help 问题` 仍然有效。评分方法和规则细节不对用户公开，没有对应主题，`/check` 只展示排名，不展示分数。
+- `/unbind`：用户自己解绑：确认后删除手机号绑定、持仓、现金、定投计划、操作记录和建议（不能撤销，建议先 `/export`），之后可以用 `/start` 重新绑定同一个或另一个手机号。确认按钮只对生成时的账户有效；重新注册后旧按钮会失效。
+- `/help`：按当前权限显示可用命令；未绑定者只看到绑定方法，已绑定但未开通者只看到订阅等入口。主题快捷命令 `/help_import`（CSV 导入格式）、`/help_faq`（常见问题）可以直接点击；Telegram 的命令名只能用英文字母、数字和下划线，所以不能用中文，旧写法 `/help 导入`、`/help 问题` 仍然有效。评分方法和规则细节不对用户公开，没有对应主题，`/check` 只展示排名，不展示分数。
 - 消息用 Telegram HTML 格式排版（粗体标题、等宽对齐的表格），所有动态内容都经过转义，测试会检查标签配对和转义。
-- 管理员：`/announce`、`/users`、`/stats`、`/health`、`/runstrategy`（手动运行策略并推送建议）。权限每次在服务器白名单校验。
+- 管理员：`/admin_help` 查看完整说明书；`/admin_list`、`/admin_show ID`、`/admin_add ID [备注]`、`/admin_edit ID 备注`、`/admin_remove ID` 管理普通管理员。四条增删查改命令也接受 `+国家区号 手机号`，例如 `/admin_add +86 13800138000 张三`。手机号只保存 HMAC 指纹，尚未绑定时授权待生效；本人验证后绑定到该 Telegram ID，换号持有人不会自动继承。按 ID 与手机号授权相互独立。另可用 `/announce`、`/users`、`/stats`、`/health`、`/runstrategy`。普通管理员不能增删改 Bot Owner，Owner 也必须先验证手机号。权限每次从 SQLite 名单校验，撤销后立即生效。
+
+`BOT_OWNER_TELEGRAM_ID` 必须设置为 Owner 本人的数字 Telegram ID，否则 Bot 拒绝启动。首次升级后启动时，旧 `MAINTAINER_TELEGRAM_IDS` 会一次性导入 SQLite；之后修改此环境变量不会覆盖通过命令做的增删。管理员变更及备注随 SQLite 备份持久保存。新加的管理员必须自己完成 `/start` 手机号验证后才可使用管理命令。
 
 公告先预览确认，再创建逐用户投递记录并后台分批发送。处理 Telegram `RetryAfter`，封禁与 API 错误会记录到 delivery，最多尝试 5 次；唯一约束防止重复建立投递。
 

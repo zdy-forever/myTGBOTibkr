@@ -13,9 +13,20 @@ QUICK_NEW = f"""📘 <b>这是什么</b>
 🔐 <b>使用前先绑定手机号</b>
 1️⃣ 发 /start
 2️⃣ 点输入框下方的按钮「📱 分享我的手机号」，在弹出的框里选「分享」
-3️⃣ 绑定后再发 /help，就能看到怎么用
+3️⃣ 授权后会检查免费白名单及付费订阅
 
-<i>用手机版 Telegram；不能手动输入；号码只用来识别你本人，默认只保存不可逆的指纹。</i>"""
+<i>用手机版 Telegram；不能手动输入；号码只用来识别你本人，默认只保存不可逆的指纹。隐私说明：/privacy</i>"""
+
+QUICK_PENDING = """✅ 手机号已验证，但尚未开通 Premium。
+400 Telegram Stars / 30 天（约 US$7.99，实际价格因购买渠道而异）。
+
+/subscribe　开通订阅
+/chat　给管理员留言
+/start　查看当前权限
+/privacy　查看手机号与付款隐私说明
+/help　查看可用命令
+/unbind　解绑并删除账户数据
+/cancel　取消当前操作"""
 
 QUICK = f"""📘 <b>快速上手</b>
 
@@ -37,8 +48,9 @@ QUICK = f"""📘 <b>快速上手</b>
 📊 <b>查看</b>（直接发送，不需要参数）
 /check　今天的排名和你的买卖建议
 /cooldown　暂不建议买入/卖出的股票
-/portfolio　我的持仓和现金
+/portfolio　我的持仓和现金；较多时用按钮翻页，或发 <code>/portfolio 2</code> 查看第 2 页
 /history　最近 20 条账户操作
+/chat　给管理员留言。发送后输入内容；管理员回复会通过机器人发给你，留言和回复保存 14 天后自动删除
 
 ✏️ <b>录入</b>
 /add　添加持仓。发送后输入「代码 股数 平均成本 币种」，例如 <code>ISRG 0.55 374.21 USD</code>
@@ -55,10 +67,48 @@ QUICK = f"""📘 <b>快速上手</b>
 /auto_notice_date　修改个人通知日期，例如 <code>/auto_notice_date 5</code> 表示第 5 个美股交易日；不带数字查看设置及日期预览
 /unbind　解绑手机号并删除我的全部数据。发送后点确认；建议先 /export 备份
 /cancel　在输入过程中随时取消
+/subscribe　查看订阅状态或开通 Premium
+/privacy　手机号与付款隐私说明
 
 📖 <b>更多说明</b>
 /help_import　CSV 导入格式
 /help_faq　常见问题"""
+
+ADMIN_QUICK = QUICK + "\n\n🛡️ <b>管理员</b>\n/admin_help　查看管理员命令说明书"
+
+ADMIN_HELP = """🛡️ <b>管理员说明书</b>
+
+<b>管理员名单</b>
+/admin_list　分页列出 Bot Owner 和所有管理员；/admin_list 2 查看第 2 页
+/admin_show 123456789　按 Telegram ID 查询管理员
+/admin_add 123456789 张三　按 Telegram ID 添加管理员（备注可省略）
+/admin_edit 123456789 新备注　修改备注；用 <code>-</code> 清空
+/admin_remove 123456789　移除这项 ID 授权
+
+以上四条也接受手机号，例如：
+<code>/admin_add +86 13800138000 张三</code>
+<code>/admin_show +86 13800138000</code>
+<code>/admin_edit +86 13800138000 新备注</code>
+<code>/admin_remove +86 13800138000</code>
+手机号只保存 HMAC 指纹。对方尚未验证时，授权待生效；本人验证后绑定到该 Telegram ID。号码换人不会自动转移权限，须移除旧授权再重新添加。ID 与手机号是独立授权，移除其中一项不影响另一项。
+
+普通管理员可以管理其他普通管理员，但不能添加、修改或移除 Bot Owner。Owner 的 ID 只能在服务器配置中设置。新管理员仍须先用 /start 验证本人手机号。
+
+<b>免费白名单</b>
+/whitelist_add +86 13800138000　添加手机号到免费 Premium 白名单
+/whitelist_remove +86 13800138000　移除手机号
+必须写国家区号与手机号；机器人只保存 HMAC 指纹。
+
+<b>运营与维护</b>
+/announce　编辑、预览并确认发布公告
+/users　查看用户概况
+/stats　查看系统统计
+/health　检查 Bot 与数据库状态
+/runstrategy　立即运行策略，向已开启策略通知且有 Premium 权限的用户推送建议
+
+<b>其他</b>
+/help　普通用户命令
+/cancel　取消正在输入的操作"""
 
 CSV = f"""📥 <b>导入持仓</b>
 先发 /import，再发送 CSV 文件（UTF-8，不超过 1 MB）。示例，点一下可以复制：
@@ -100,6 +150,9 @@ FAQ = """❓ <b>常见问题</b>
 
 <b>我的数据别人看得到吗？</b>
 不会。每个人只用自己的持仓和现金计算，看到的也只有自己的结果。
+
+<b>怎么联系管理员？</b>
+发 /chat，再输入留言。只有绑定手机号的用户可以留言；管理员回复会由机器人发给你。留言和回复最多 2000 字，在数据库中保存 14 天后自动删除。
 
 <b>怎么解绑、删除我的数据？</b>
 发 /unbind，确认后会删除你的手机号绑定、持仓、现金、操作记录和建议，不能撤销，建议先 /export 导出。之后随时可以用 /start 重新绑定。

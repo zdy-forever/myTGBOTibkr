@@ -209,7 +209,8 @@ def store_user_signals(session: Session, row: StrategyRun, run, user_id: str, da
     return created
 
 
-def generate_for_all_users(factory, row_id: int, settings, *, user_ids=None, notice_month=None, notice_day=None) -> dict:
+def generate_for_all_users(factory, row_id: int, settings, *, user_ids=None, notice_month=None, notice_day=None,
+                           accounts=None) -> dict:
     """One user at a time, each in its own transaction, so a problem with one portfolio never affects another."""
     with transaction(factory) as session:
         row = session.get(StrategyRun, row_id)
@@ -217,7 +218,8 @@ def generate_for_all_users(factory, row_id: int, settings, *, user_ids=None, not
         query = select(User.id).join(NotificationPreference).where(User.is_active, NotificationPreference.signals_enabled)
         if user_ids is not None:
             query = query.where(User.id.in_(user_ids))
-        user_ids = list(session.scalars(query))
+        user_ids = [uid for uid in session.scalars(query)
+                    if accounts is None or accounts.has_premium_access(session, session.get(User, uid).telegram_id)]
     stats = {"users": len(user_ids), "with_signals": 0, "errors": 0}
     for user_id in user_ids:
         try:
@@ -225,6 +227,8 @@ def generate_for_all_users(factory, row_id: int, settings, *, user_ids=None, not
                 prefs = session.get(NotificationPreference, user_id)
                 user = session.get(User, user_id)
                 if not user or not user.is_active or not prefs or not prefs.signals_enabled:
+                    continue
+                if accounts is not None and not accounts.has_premium_access(session, user.telegram_id):
                     continue
                 if notice_day is not None and (prefs.auto_notice_day != notice_day or prefs.last_notice_month == notice_month):
                     continue
@@ -272,6 +276,8 @@ async def _deliver_pending(application) -> tuple[int, int]:
             .order_by(UserSignal.user_id, UserSignal.action.desc(), UserSignal.id)).all()
         batches: dict[str, tuple[int, list[tuple[int, str]]]] = {}
         for us, telegram_id in rows:
+            if application.bot_data.get("enforce_premium") and not application.bot_data["accounts"].has_premium_access(session, telegram_id):
+                continue
             batches.setdefault(us.user_id, (telegram_id, []))[1].append((us.id, public_recommendation(us.recommendation)))
     sent = failed = 0
     for telegram_id, items in batches.values():
@@ -387,7 +393,8 @@ async def _run_and_notify(application, *, force=False, user_ids=None, notice_mon
     tz, _ = application.bot_data.get("strategy_push", DEFAULT_PUSH)
     notice_month = notice_month or datetime.now(ZoneInfo(tz)).strftime("%Y-%m")
     result["generation"] = await asyncio.to_thread(generate_for_all_users, factory, result["run_id"], settings,
-                                                   user_ids=user_ids, notice_month=notice_month, notice_day=notice_day)
+                                                   user_ids=user_ids, notice_month=notice_month, notice_day=notice_day,
+                                                   accounts=application.bot_data.get("accounts") if application.bot_data.get("enforce_premium") else None)
     result["sent"], result["failed"] = await deliver_pending(application)
     with transaction(factory) as session:
         mark_monthly_done(session, result["run_id"])
@@ -506,12 +513,14 @@ def first_trading_day(settings, year: int, month: int, calendar=None) -> date:
     return month_trading_days(settings, year, month, calendar)[0]
 
 
-def due_notice_users(session, now: datetime, day: int, tz: str) -> list[str]:
+def due_notice_users(session, now: datetime, day: int, tz: str, accounts=None) -> list[str]:
     local = now.astimezone(ZoneInfo(tz))
     month = local.strftime("%Y-%m")
     result = []
     for prefs in session.scalars(select(NotificationPreference).join(User).where(
             User.is_active, NotificationPreference.signals_enabled, NotificationPreference.auto_notice_day == day)):
+        if accounts is not None and not accounts.has_premium_access(session, session.get(User, prefs.user_id).telegram_id):
+            continue
         if prefs.last_notice_month == month:
             continue
         if prefs.notice_attempt_date == local.date():
@@ -555,7 +564,8 @@ async def _monthly_tick(app, now, local, tz):
             return
         ordinal = days.index(today) + 1
         with transaction(app.bot_data["session_factory"]) as session:
-            user_ids = due_notice_users(session, now, ordinal, tz)
+            user_ids = due_notice_users(session, now, ordinal, tz,
+                                        app.bot_data.get("accounts") if app.bot_data.get("enforce_premium") else None)
             for user_id in user_ids:
                 prefs = session.get(NotificationPreference, user_id)
                 prefs.notice_attempts = prefs.notice_attempts + 1 if prefs.notice_attempt_date == today else 1

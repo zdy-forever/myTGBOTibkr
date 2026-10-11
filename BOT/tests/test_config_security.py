@@ -5,6 +5,7 @@ from quantbot.security import PhoneProtector, normalize_phone
 
 def test_contact_phone_validation():
     assert normalize_phone("+61 400-000-001") == "+61400000001"
+    assert normalize_phone("61 400-000-001") == "+61400000001"
     with pytest.raises(ValueError):
         normalize_phone("123")
 

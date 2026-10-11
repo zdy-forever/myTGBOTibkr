@@ -30,7 +30,7 @@ def _money(value: str) -> tuple[Decimal, str]:
     match = MONEY_RE.match(value)
     if not match:
         raise ValueError(f"invalid money value: {value}")
-    return decimal_value(match.group(1)), normalize_currency(match.group(2))
+    return decimal_value(match.group(1), max_places=8), normalize_currency(match.group(2))
 
 
 def import_portfolio_csv(session: Session, user: User, content: str, *, actor: int,

@@ -53,3 +53,17 @@ def test_transaction_rolls_back_on_error(factory, accounts):
         raise RuntimeError("telegram-style downstream failure")
     with transaction(factory) as session:
         assert session.scalar(select(Position)) is None
+
+
+@pytest.mark.parametrize("field,value", [
+    ("shares", "1e309"), ("shares", "0.00000000001"),
+    ("average_cost", "1e309"), ("average_cost", "1.000000001"),
+])
+def test_position_rejects_values_sqlite_cannot_safely_store(factory, accounts, field, value):
+    register(factory, accounts)
+    values = {"shares": "1", "average_cost": "100", field: value}
+    with pytest.raises(ValueError), transaction(factory) as session:
+        PortfolioService().add_position(session, accounts.require(session, 1), "AAPL",
+                                        values["shares"], values["average_cost"], actor=1)
+    with transaction(factory) as session:
+        assert session.scalar(select(Position)) is None

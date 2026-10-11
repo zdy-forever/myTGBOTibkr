@@ -79,6 +79,55 @@ class User(Base):
     positions: Mapped[list[Position]] = relationship(back_populates="user")
 
 
+class AdminGrant(Base):
+    __tablename__ = "admin_grants"
+    telegram_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    label: Mapped[str | None] = mapped_column(String(80))
+    created_by_telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class AdminPhoneGrant(Base):
+    __tablename__ = "admin_phone_grants"
+    phone_fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # Claimed by the first verified account; a recycled number cannot silently
+    # transfer administrator rights to a different Telegram account.
+    telegram_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    label: Mapped[str | None] = mapped_column(String(80))
+    created_by_telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class AdminBootstrap(Base):
+    __tablename__ = "admin_bootstrap"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    initialized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class PhoneWhitelist(Base):
+    __tablename__ = "phone_whitelist"
+    phone_fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_by_telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class PremiumSubscription(Base):
+    __tablename__ = "premium_subscriptions"
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class SubscriptionPayment(Base):
+    __tablename__ = "subscription_payments"
+    telegram_charge_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    amount_stars: Mapped[int] = mapped_column(Integer, nullable=False)
+    paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class CashAccount(Base):
     __tablename__ = "cash_accounts"
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
@@ -184,6 +233,28 @@ class AnnouncementDelivery(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    replied_by_telegram_id: Mapped[int | None] = mapped_column(BigInteger)
+    reply_body: Mapped[str | None] = mapped_column(Text)
+    replied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ChatDelivery(Base):
+    __tablename__ = "chat_deliveries"
+    __table_args__ = (UniqueConstraint("message_id", "maintainer_telegram_id", name="uq_chat_delivery"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    message_id: Mapped[int] = mapped_column(ForeignKey("chat_messages.id", ondelete="CASCADE"), index=True)
+    maintainer_telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_error: Mapped[str | None] = mapped_column(Text)
 
 

@@ -9,7 +9,7 @@ from telegram.ext import Application
 
 from .bot import configure_application
 from .config import Settings
-from .db import create_db_engine, session_factory
+from .db import create_db_engine, session_factory, transaction
 from .security import PhoneProtector
 from .services import AccountService
 
@@ -36,12 +36,17 @@ def configure_logging(level: str) -> None:
 
 
 def build_application(settings: Settings) -> Application:
+    if settings.bot_owner_telegram_id is None or settings.bot_owner_telegram_id <= 0:
+        raise ValueError("BOT_OWNER_TELEGRAM_ID must be set to the numeric Telegram ID of the Bot Owner")
     engine = create_db_engine(settings.database_url)
     factory = session_factory(engine)
     accounts = AccountService(
         PhoneProtector(settings.phone_hmac_secret, settings.phone_encryption_key),
         settings.maintainer_telegram_ids,
+        settings.bot_owner_telegram_id,
     )
+    with transaction(factory) as session:
+        accounts.bootstrap_admins(session)
     application = Application.builder().token(settings.telegram_bot_token).build()
     configure_application(application, accounts, factory)
     application.bot_data["strategy_autorun"] = settings.strategy_autorun

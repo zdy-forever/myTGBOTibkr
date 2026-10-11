@@ -4,15 +4,25 @@ import hashlib
 import hmac
 import re
 
+import phonenumbers
 from cryptography.fernet import Fernet
 
 
 def normalize_phone(phone: str) -> str:
-    phone = phone.strip()
-    digits = re.sub(r"\D", "", phone)
-    if not 7 <= len(digits) <= 15:
-        raise ValueError("invalid phone number length")
-    return "+" + digits
+    if not isinstance(phone, str):
+        raise ValueError("请输入含国家区号的有效手机号，例如 +86 13800138000")
+    value = phone.strip()
+    # Telegram clients can omit the leading '+' while still sending the
+    # international number. Never guess a region for a national-only number.
+    if not value.startswith("+") and re.fullmatch(r"[0-9][0-9 ()-]*", value):
+        value = "+" + value
+    try:
+        parsed = phonenumbers.parse(value, None)
+    except (AttributeError, phonenumbers.NumberParseException) as exc:
+        raise ValueError("请输入含国家区号的有效手机号，例如 +86 13800138000") from exc
+    if not phonenumbers.is_valid_number(parsed):
+        raise ValueError("请输入含国家区号的有效手机号，例如 +86 13800138000")
+    return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
 
 
 class PhoneProtector:

@@ -320,9 +320,11 @@ async def test_monthly_tick_pushes_only_on_the_first_trading_day(factory, accoun
 class FakeMessage:
     def __init__(self):
         self.texts = []
+        self.replies = []
 
     async def reply_text(self, text, **kwargs):
         self.texts.append(text)
+        self.replies.append((text, kwargs))
 
 
 class FakeApp:
@@ -341,7 +343,7 @@ class FakeApp:
 def handler_args(factory, accounts, telegram_id, app=None):
     message = FakeMessage()
     update = SimpleNamespace(message=message, effective_user=SimpleNamespace(id=telegram_id), effective_chat=SimpleNamespace(id=telegram_id))
-    context = SimpleNamespace(application=app or FakeApp(factory, accounts), args=[])
+    context = SimpleNamespace(application=app or FakeApp(factory, accounts), args=[], user_data={})
     return update, context, message
 
 
@@ -459,7 +461,9 @@ def test_help_topics_exist_fit_telegram_and_cover_every_registered_command():
     assert all(len(t) < 4096 for t in (help_text.QUICK, help_text.CSV, help_text.FAQ))
     app = bot.configure_application(Application.builder().token("123456:TEST").build(), None, None)
     commands = {c for handler in app.handlers[0] for c in getattr(handler, "commands", ())}
-    admin = {"users", "stats", "health", "runstrategy", "announce", "start", "cancel", "help", "signals"}
+    admin = {"users", "stats", "health", "runstrategy", "announce", "whitelist_add", "whitelist_remove",
+             "admin_help", "admin_list", "admin_show", "admin_add", "admin_edit", "admin_remove",
+             "start", "cancel", "help", "signals"}
     assert {"check", "cooldown"} <= commands
     missing = [c for c in sorted(commands - admin) if f"/{c}" not in help_text.QUICK]
     assert not missing, f"/help does not mention: {missing}"
@@ -564,6 +568,8 @@ def test_numbers_are_shown_the_way_people_write_them():
     assert qty(Decimal("0.5500000000")) == "0.55" and qty(Decimal("3.0000000000")) == "3" and qty(Decimal("0E-10")) == "0" and qty(Decimal("0.5500000001")) == "0.5500000001"
     assert price(Decimal("374.21000000")) == "374.21" and price(Decimal("120.00000000")) == "120.00" and price(Decimal("380.12345678")) == "380.12345678" and price(Decimal("0.01230000")) == "0.0123"
     assert plain(Decimal("-0E-8"), 2, 8) == "0.00" and "E" not in plain(Decimal("1E+3"))
+    assert qty(Decimal("Infinity")) == "数值异常"
+    assert money(Decimal("1E+100")) == "数值异常"
 
 
 async def test_portfolio_command_and_csv_export_never_show_exponents_or_trailing_zeros(factory, accounts):
@@ -601,25 +607,25 @@ async def test_help_depends_on_whether_the_phone_is_bound(factory, accounts):
     await bot.help_command(bound, ctx_bound)
     unbound, ctx_unbound, msg_unbound = handler_args(factory, accounts, 2, app)
     await bot.help_command(unbound, ctx_unbound)
-    assert msg_bound.texts[0] == help_text.QUICK and "绑定手机号" not in help_text.QUICK and "/unbind" in help_text.QUICK        # already bound: no binding step
+    assert msg_bound.texts[0] == help_text.QUICK_PENDING and "/subscribe" in msg_bound.texts[0]
     assert msg_unbound.texts[0] == help_text.QUICK_NEW and "/start" in help_text.QUICK_NEW and "/add" not in help_text.QUICK_NEW
 
 
 class FakeQuery:
     def __init__(self, data):
-        self.data, self.edits = data, []
+        self.data, self.edits, self.answers = data, [], []
 
-    async def answer(self):
-        pass
+    async def answer(self, *args, **kwargs):
+        self.answers.append((args, kwargs))
 
     async def edit_message_text(self, text, **kwargs):
         self.edits.append(text)
 
 
-def callback_args(factory, accounts, telegram_id, data, app):
+def callback_args(factory, accounts, telegram_id, data, app, user_data=None):
     query = FakeQuery(data)
     update = SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=telegram_id))
-    return update, SimpleNamespace(application=app, user_data={"x": 1}, args=[]), query
+    return update, SimpleNamespace(application=app, user_data=user_data if user_data is not None else {}, args=[]), query
 
 
 async def test_unbind_deletes_only_the_callers_data_after_confirmation_and_allows_binding_again(factory, accounts):
@@ -641,14 +647,18 @@ async def test_unbind_deletes_only_the_callers_data_after_confirmation_and_allow
     update, context, message = handler_args(factory, accounts, 1, app)
     await bot.unbind_start(update, context)
     assert "不能撤销" in message.texts[0] and "/export" in message.texts[0]
+    cancel_data, confirm_data = [button.callback_data for button in message.replies[0][1]["reply_markup"].inline_keyboard[0]][::-1]
     with factory.begin() as session:
         assert session.get(User, mine) is not None                                           # asking is not enough
-    u, c, q = callback_args(factory, accounts, 1, "unbind:no", app)
+    u, c, q = callback_args(factory, accounts, 1, cancel_data, app, context.user_data)
     await bot.unbind_confirm(u, c)
     assert "已取消" in q.edits[0]
     with factory.begin() as session:
         assert session.get(User, mine) is not None
-    u, c, q = callback_args(factory, accounts, 1, "unbind:yes", app)
+    update, context, message = handler_args(factory, accounts, 1, app)
+    await bot.unbind_start(update, context)
+    confirm_data = message.replies[0][1]["reply_markup"].inline_keyboard[0][0].callback_data
+    u, c, q = callback_args(factory, accounts, 1, confirm_data, app, context.user_data)
     await bot.unbind_confirm(u, c)
     assert "已解绑" in q.edits[0] and c.user_data == {} and app.bot_data["check_waiters"] == {other: 2}
     with factory.begin() as session:
@@ -662,9 +672,9 @@ async def test_unbind_deletes_only_the_callers_data_after_confirmation_and_allow
     assert "/start" in message.texts[0]                                                      # no longer registered
     with factory.begin() as session:
         assert accounts.register(session, 1, "+61400000001").user is not None               # and can bind again
-    u, c, q = callback_args(factory, accounts, 99, "unbind:yes", app)
+    u, c, q = callback_args(factory, accounts, 99, confirm_data, app)
     await bot.unbind_confirm(u, c)
-    assert "还没有绑定" in q.edits[0]                                                          # an unregistered person pressing the button deletes nothing
+    assert "已失效" in q.answers[0][0][0]                                                          # an unregistered person pressing the button deletes nothing
 
 
 def _assert_valid_telegram_html(text):
@@ -687,6 +697,40 @@ def _assert_valid_telegram_html(text):
     assert len(text) < 4096
     stripped = __import__("re").sub(r"</?(?:b|i|code|pre)>", "", text)
     assert "<" not in stripped and ">" not in stripped and "&" not in __import__("re").sub(r"&(?:lt|gt|amp|quot|#x27);", "", stripped)       # everything dynamic is escaped
+
+
+async def test_portfolio_pages_cover_all_positions_and_buttons_are_account_bound(factory, accounts):
+    from quantbot import bot
+    from quantbot.display import render_portfolio_pages
+
+    user_id = add_user(factory, 999, cash="500")
+    with factory.begin() as session:
+        session.add_all(Position(user_id=user_id, symbol=f"STOCK{i:04d}", exchange="US",
+                                 shares=Decimal(1), average_cost=Decimal(100), currency="USD")
+                        for i in range(200))
+    with factory.begin() as session:
+        positions = session.scalars(select(Position).where(Position.user_id == user_id).order_by(Position.symbol)).all()
+        pages = render_portfolio_pages(session.get(CashAccount, user_id), positions)
+    assert len(pages) > 1
+    assert all(len(page) <= 4096 for page in pages)
+    assert all(sum(symbol in page for page in pages) == 1 for symbol in ("STOCK0000", "STOCK0100", "STOCK0199"))
+    for page in pages:
+        _assert_valid_telegram_html(page)
+
+    app = FakeApp(factory, accounts)
+    update, context, message = handler_args(factory, accounts, 999, app)
+    await bot.portfolio(update, context)
+    next_data = message.replies[0][1]["reply_markup"].inline_keyboard[0][0].callback_data
+    callback_update, callback_context, query = callback_args(factory, accounts, 999, next_data, app)
+    await bot.portfolio_page(callback_update, callback_context)
+    assert "第 2/" in query.edits[0]
+
+    with factory.begin() as session:
+        accounts.unregister(session, 999)
+        accounts.register(session, 999, "+61400000999")
+    old_update, old_context, old_query = callback_args(factory, accounts, 999, next_data, app)
+    await bot.portfolio_page(old_update, old_context)
+    assert "旧账户" in old_query.answers[0][0][0]
 
 
 def test_every_formatted_message_is_valid_telegram_html_even_with_hostile_text():
@@ -732,6 +776,9 @@ async def test_help_shortcut_commands_show_their_topic(factory, accounts):
     from quantbot import bot, help_text
 
     add_user(factory, 1, cash="0")
+    with factory.begin() as session:
+        from quantbot.models import PhoneWhitelist
+        session.add(PhoneWhitelist(phone_fingerprint="fp1", created_by_telegram_id=999))
     app = FakeApp(factory, accounts)
     update, context, message = handler_args(factory, accounts, 1, app)
     await bot.help_import(update, context)

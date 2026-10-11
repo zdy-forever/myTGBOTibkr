@@ -28,6 +28,7 @@ class Settings:
     phone_hmac_secret: str = ""
     phone_encryption_key: str | None = None
     maintainer_telegram_ids: frozenset[int] = field(default_factory=frozenset)
+    bot_owner_telegram_id: int | None = None
     log_level: str = "INFO"
     backup_dir: Path = Path("backups")
     backup_retention_days: int = 30
@@ -50,6 +51,7 @@ class Settings:
             phone_hmac_secret=secret,
             phone_encryption_key=os.getenv("PHONE_ENCRYPTION_KEY") or None,
             maintainer_telegram_ids=_ids(os.getenv("MAINTAINER_TELEGRAM_IDS", "")),
+            bot_owner_telegram_id=int(os.environ["BOT_OWNER_TELEGRAM_ID"]) if os.getenv("BOT_OWNER_TELEGRAM_ID") else None,
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             backup_dir=Path(os.getenv("BACKUP_DIR", "backups")),
             backup_retention_days=int(os.getenv("BACKUP_RETENTION_DAYS", "30")),
