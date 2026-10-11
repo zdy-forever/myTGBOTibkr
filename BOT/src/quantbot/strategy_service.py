@@ -7,7 +7,9 @@ Nothing here places an order: users are notified and decide for themselves.
 from __future__ import annotations
 
 import asyncio
+import calendar as month_calendar
 import logging
+import re
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from html import escape as esc
@@ -27,14 +29,17 @@ from .models import (
     Signal,
     SignalAction,
     StrategyRun,
+    Transaction,
+    TransactionType,
     User,
     UserSignal,
 )
-from .strategy_text import DISCLAIMER_HTML, KIND_TITLE, render_check, signal_line
+from .strategy_text import DISCLAIMER_HTML, public_recommendation, render_check, signal_line
 
 log = logging.getLogger(__name__)
 NY = ZoneInfo("America/New_York")
 MAX_ATTEMPTS = 5
+US_EXCHANGES = frozenset({"US", "NASDAQ", "NYSE", "AMEX", "ARCA", "NYSEARCA", "BATS"})
 REFERENCE_NOTE = ("共享参考行：本次策略运行中该股票的 P/V/F 原始分（P 为原始值，越低越好）。"
                   "买卖建议按每位用户自己的持仓单独计算，见 user_signals。")
 
@@ -71,13 +76,30 @@ def build_engine(settings):
 def held_symbols(session: Session) -> set[str]:
     """Only ticker symbols (no owners, no quantities): the engine needs prices for names outside the ETF pool."""
     return set(session.scalars(
-        select(Position.symbol).join(User).where(User.is_active, Position.currency == "USD")))
+        select(Position.symbol).join(User).where(
+            User.is_active, Position.currency == "USD", Position.exchange.in_(US_EXCHANGES))))
 
 
 def portfolio_of(session: Session, user_id: str):
     qs = load_library()
-    holdings = {p.symbol: qs.Holding(p.symbol, float(p.shares), float(p.average_cost), p.currency, p.exchange)
-                for p in session.scalars(select(Position).where(Position.user_id == user_id))}
+    # The strategy and Alpaca identify US securities by ticker. Aggregate their
+    # venue rows without losing quantity or cost; never merge foreign listings
+    # or currencies into the same ticker (or value them at a US quote).
+    totals = {}
+    for p in session.scalars(select(Position).where(Position.user_id == user_id)):
+        is_us = p.currency == "USD" and p.exchange in US_EXCHANGES
+        key = p.symbol if is_us else f"{p.symbol}@{p.exchange}:{p.currency}"
+        shares, cost = totals.get(key, (Decimal(0), Decimal(0)))
+        totals[key] = (shares + p.shares, cost + p.shares * p.average_cost)
+    holdings = {}
+    for key, (shares, cost) in totals.items():
+        if "@" in key:
+            symbol, market = key.split("@", 1)
+            exchange, currency = market.rsplit(":", 1)
+        else:
+            symbol, exchange, currency = key, "US", "USD"
+        holdings[key] = qs.Holding(symbol, float(shares), float(cost / shares) if shares else 0.0,
+                                   currency, exchange)
     cash = session.get(CashAccount, user_id)
     return qs.Portfolio(holdings=holdings, cash=float(cash.balance) if cash else 0.0, currency=cash.currency if cash else "USD")
 
@@ -87,24 +109,26 @@ def _aware(value: datetime) -> datetime:
 
 
 def cooldowns(session: Session, user_id: str) -> tuple[dict, dict]:
-    """The strategy's anti-churn rules, rebuilt from this user's own earlier suggestions (no extra table):
-    a name sold by a K1A / K5x suggestion is not bought back for 180 days; a name bought by one cannot be sold by K1A / K5x for 180 days (365 if it is a re-buy)."""
+    """Rebuild buy blocks from recorded sales, never from generated suggestions.
+
+    Only explicitly marked edit/remove transactions count. Legacy edits may be
+    corrections, so they must not retroactively become sales. The original
+    transaction timestamp is retained when the user answers the prompt later.
+    """
     from quant_strategy import logic
 
-    rows = session.execute(
-        select(UserSignal, Signal.symbol).join(Signal, Signal.id == UserSignal.signal_id).where(UserSignal.user_id == user_id)
-        .order_by(UserSignal.created_at, UserSignal.id)).all()
-    blocked, protected, sold = {}, {}, set()
-    for us, symbol in rows:
-        at = _aware(us.created_at)
-        if us.action == SignalAction.SELL:
-            blocked[symbol] = at + timedelta(days=logic.K1A.block_days)
-            sold.add(symbol)
-        elif us.recommendation.startswith(f"【{KIND_TITLE['K1A_REPLACE']}】"):
-            protected[symbol] = at + timedelta(days=logic.K1A.block_days)
-        elif us.recommendation.startswith(f"【{KIND_TITLE['K5X_TRIM']}】"):
-            protected[symbol] = at + timedelta(days=logic.OA.rebuy_protect_days if symbol in sold else logic.K1A.block_days)
-    return blocked, protected
+    rows = session.scalars(select(Transaction).where(
+        Transaction.user_id == user_id,
+        Transaction.type.in_([TransactionType.POSITION_UPDATE, TransactionType.POSITION_DELETE])))
+    blocked = {}
+    for row in rows:
+        if not (row.after_data or {}).get("sale_cooldown", {}).get("enabled"):
+            continue
+        currency = (row.before_data or {}).get("currency", "USD")
+        symbol = row.symbol if currency == "USD" and row.exchange in US_EXCHANGES else f"{row.symbol}@{row.exchange}:{currency}"
+        until = _aware(row.created_at) + timedelta(days=logic.K1A.block_days)
+        blocked[symbol] = max(blocked.get(symbol, until), until)
+    return blocked, {}
 
 
 def signals_for(session: Session, user_id: str, run, settings, now: datetime | None = None) -> dict:
@@ -114,13 +138,6 @@ def signals_for(session: Session, user_id: str, run, settings, now: datetime | N
     deposit = portfolio.cash if portfolio.currency == "USD" else 0.0
     blocked, protected = cooldowns(session, user_id)
     data = qs.signals_for_user(run, portfolio, settings, deposit_usd=deposit, blocked=blocked, protected=protected, now=now).to_dict()
-    from quant_strategy.signals import user_scores
-
-    held_values = {s: h.shares * run.prices.get(s, h.avg_price) for s, h in portfolio.holdings.items() if h.currency == "USD"}
-    scores = user_scores(run, held_values)
-    rank = {s: i for i, s in enumerate(sorted(scores, key=lambda s: (-scores[s]["total"], s)), 1)}
-    for signal in data["signals"]:
-        signal["rank"] = rank.get(signal["symbol"])                       # shown instead of the score, which users never see
     return data
 
 
@@ -134,11 +151,14 @@ def store_run(session: Session, run, *, force: bool = False) -> tuple[StrategyRu
     """-> (row, created). One row per (trading_date, strategy_version): a completed run is reused unless `force`; a failed or skipped one is replaced."""
     version = run.strategy["version"]
     row = session.scalar(select(StrategyRun).where(StrategyRun.trading_date == _trading_date(run), StrategyRun.strategy_version == version))
-    if row is not None and row.status == RunStatus.COMPLETED and run.status == "ok" and not force:
+    if (row is not None and row.status == RunStatus.COMPLETED and run.status == "ok" and not force
+            and analysis_symbols(run) <= analysis_symbols(result_of(row))):
         return row, False
     status = {"ok": RunStatus.COMPLETED, "stale": RunStatus.SKIPPED}.get(run.status, RunStatus.FAILED)
     fields = {"status": status, "started_at": datetime.fromisoformat(run.started_at), "completed_at": datetime.fromisoformat(run.finished_at),
               "error": None if status == RunStatus.COMPLETED else "；".join(run.notes[-3:])[:2000], "metadata_json": run.to_dict()}
+    if row is not None and (row.metadata_json or {}).get("monthly_notified_at"):
+        fields["metadata_json"]["monthly_notified_at"] = row.metadata_json["monthly_notified_at"]
     if row is None:
         row = StrategyRun(trading_date=_trading_date(run), strategy_version=version, **fields)
         session.add(row)
@@ -164,7 +184,7 @@ def _reference_signal(session: Session, row: StrategyRun, run, symbol: str) -> S
     sig = session.scalar(select(Signal).where(Signal.run_id == row.id, Signal.symbol == symbol, Signal.exchange == "US"))
     if sig is not None:
         return sig
-    comps = run.symbols.get(symbol, {})
+    comps = run.symbols.get(symbol) or run.holding_symbols.get(symbol, {})
     price = run.prices.get(symbol) or comps.get("price")
     as_of = datetime.fromisoformat(run.as_of_bar).replace(tzinfo=UTC)
     d = lambda x: None if x is None else Decimal(str(round(x, 6)))
@@ -189,19 +209,32 @@ def store_user_signals(session: Session, row: StrategyRun, run, user_id: str, da
     return created
 
 
-def generate_for_all_users(factory, row_id: int, settings) -> dict:
+def generate_for_all_users(factory, row_id: int, settings, *, user_ids=None, notice_month=None, notice_day=None) -> dict:
     """One user at a time, each in its own transaction, so a problem with one portfolio never affects another."""
     with transaction(factory) as session:
         row = session.get(StrategyRun, row_id)
         run = result_of(row)
-        user_ids = list(session.scalars(select(User.id).join(NotificationPreference).where(User.is_active, NotificationPreference.signals_enabled)))
+        query = select(User.id).join(NotificationPreference).where(User.is_active, NotificationPreference.signals_enabled)
+        if user_ids is not None:
+            query = query.where(User.id.in_(user_ids))
+        user_ids = list(session.scalars(query))
     stats = {"users": len(user_ids), "with_signals": 0, "errors": 0}
     for user_id in user_ids:
         try:
             with transaction(factory) as session:
+                prefs = session.get(NotificationPreference, user_id)
+                user = session.get(User, user_id)
+                if not user or not user.is_active or not prefs or not prefs.signals_enabled:
+                    continue
+                if notice_day is not None and (prefs.auto_notice_day != notice_day or prefs.last_notice_month == notice_month):
+                    continue
                 data = signals_for(session, user_id, run, settings)
                 if data["signals"] and store_user_signals(session, session.get(StrategyRun, row_id), run, user_id, data):
                     stats["with_signals"] += 1
+                if notice_month is not None:
+                    # Delivery has its own durable retries; do not regenerate
+                    # this user's month just because Telegram is unavailable.
+                    prefs.last_notice_month = notice_month
         except Exception:
             stats["errors"] += 1
             log.exception("strategy signals failed for one user")
@@ -211,7 +244,26 @@ def generate_for_all_users(factory, row_id: int, settings) -> dict:
 # ---------------------------------------------------------------- delivery
 
 async def deliver_pending(application) -> tuple[int, int]:
-    """Send each user ONE message with all of their pending suggestions. Records every attempt; safe to repeat after a restart."""
+    """Serialize manual/monthly delivery and background retries in this process."""
+    lock = application.bot_data.setdefault("strategy_delivery_lock", asyncio.Lock())
+    if lock.locked():
+        return 0, 0
+    async with lock:
+        return await _deliver_pending(application)
+
+
+async def retry_pending_notifications(context) -> None:
+    """Resume persisted pending deliveries, independently of monthly autorun."""
+    try:
+        sent, failed = await deliver_pending(context.application)
+        if sent or failed:
+            log.info("strategy notification retry: sent=%s failed=%s", sent, failed)
+    except Exception:
+        log.exception("strategy notification retry failed")
+
+
+async def _deliver_pending(application) -> tuple[int, int]:
+    """Send each user ONE message with pending suggestions, up to MAX_ATTEMPTS."""
     factory = application.bot_data["session_factory"]
     with transaction(factory) as session:
         rows = session.execute(
@@ -220,7 +272,7 @@ async def deliver_pending(application) -> tuple[int, int]:
             .order_by(UserSignal.user_id, UserSignal.action.desc(), UserSignal.id)).all()
         batches: dict[str, tuple[int, list[tuple[int, str]]]] = {}
         for us, telegram_id in rows:
-            batches.setdefault(us.user_id, (telegram_id, []))[1].append((us.id, us.recommendation))
+            batches.setdefault(us.user_id, (telegram_id, []))[1].append((us.id, public_recommendation(us.recommendation)))
     sent = failed = 0
     for telegram_id, items in batches.values():
         text = ("📈 <b>本月策略建议</b>\n\n" + "\n\n".join(esc(t) for _, t in items) + "\n\n" + DISCLAIMER_HTML + "\n\n<i>用 /check 可按你当前的持仓重新查看。</i>")
@@ -239,6 +291,8 @@ async def deliver_pending(application) -> tuple[int, int]:
         with transaction(factory) as session:
             for item_id, _ in items:
                 current = session.get(UserSignal, item_id)
+                if current is None:  # the user may have unbound while Telegram was awaited
+                    continue
                 current.notification_attempts += 1
                 current.last_error = error
                 if error is None:
@@ -258,7 +312,18 @@ def _naive_utc(value: datetime) -> datetime:
 
 
 def is_fresh(row: StrategyRun, now: datetime | None = None) -> bool:
-    return (_naive_utc(now or datetime.now(UTC)) - _naive_utc(row.started_at)) < timedelta(hours=FRESH_HOURS)
+    return (row.strategy_version == load_library().strategy_info()["version"] and
+            (_naive_utc(now or datetime.now(UTC)) - _naive_utc(row.started_at)) < timedelta(hours=FRESH_HOURS))
+
+
+def analysis_symbols(run) -> set[str]:
+    return set(run.symbols) | set(run.unscored) | set(run.holding_symbols) | set(run.holding_unscored)
+
+
+def covers_holdings(session, user_id, row) -> bool:
+    symbols = set(session.scalars(select(Position.symbol).where(
+        Position.user_id == user_id, Position.currency == "USD", Position.exchange.in_(US_EXCHANGES))))
+    return symbols <= analysis_symbols(result_of(row))
 
 
 def recent_attempt(session: Session, now: datetime | None = None) -> StrategyRun | None:
@@ -299,18 +364,30 @@ async def refresh_run(application, *, force: bool = False) -> dict:
         return {"run_id": row_id, "status": status.value, "as_of_bar": run.as_of_bar, "scored": len(run.symbols), "notes": run.notes[-3:], "reused": not created, "settings": settings}
 
 
-async def run_and_notify(application, *, force: bool = False) -> dict:
+async def run_and_notify(application, *, force: bool = False, user_ids=None, notice_month=None, notice_day=None) -> dict:
+    lock = application.bot_data.setdefault("strategy_notice_lock", asyncio.Lock())
+    if lock.locked():
+        raise StrategyUnavailable("已有一次策略推送正在进行。")
+    async with lock:
+        return await _run_and_notify(application, force=force, user_ids=user_ids,
+                                     notice_month=notice_month, notice_day=notice_day)
+
+
+async def _run_and_notify(application, *, force=False, user_ids=None, notice_month=None, notice_day=None) -> dict:
     """Monthly push: shared run (a completed run from the last 12 hours is reused), per-user scoring, notifications. Marks the month as done."""
     factory = application.bot_data["session_factory"]
     with transaction(factory) as session:
         row = latest_completed(session)
-        reuse = None if force or row is None or not is_fresh(row) else {"run_id": row.id, "status": "completed", "as_of_bar": row.metadata_json.get("as_of_bar", ""), "scored": len(row.metadata_json.get("symbols", {})),
+        reuse = None if force or row is None or not is_fresh(row) or not held_symbols(session) <= analysis_symbols(result_of(row)) else {"run_id": row.id, "status": "completed", "as_of_bar": row.metadata_json.get("as_of_bar", ""), "scored": len(row.metadata_json.get("symbols", {})),
                                                                        "notes": [], "reused": True}
     result = reuse or await refresh_run(application, force=force)
     settings = result.pop("settings", None) or strategy_settings()
     if result["status"] != RunStatus.COMPLETED.value:
         return result
-    result["generation"] = await asyncio.to_thread(generate_for_all_users, factory, result["run_id"], settings)
+    tz, _ = application.bot_data.get("strategy_push", DEFAULT_PUSH)
+    notice_month = notice_month or datetime.now(ZoneInfo(tz)).strftime("%Y-%m")
+    result["generation"] = await asyncio.to_thread(generate_for_all_users, factory, result["run_id"], settings,
+                                                   user_ids=user_ids, notice_month=notice_month, notice_day=notice_day)
     result["sent"], result["failed"] = await deliver_pending(application)
     with transaction(factory) as session:
         mark_monthly_done(session, result["run_id"])
@@ -342,36 +419,151 @@ def due_for_monthly_run(session: Session, now: datetime | None = None, tz: str =
     return not any((r.metadata_json or {}).get("monthly_notified_at") for r in rows)
 
 
-def first_trading_day(settings, year: int, month: int, calendar=None) -> date:
-    """First US market session of the month from Alpaca's calendar; if it cannot be reached, the first weekday."""
+def parse_notice_day(value: str) -> int:
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]{1,2}", value):
+        raise ValueError("请输入 1–23 的整数，例如 /auto_notice_date 5；不接受小数、负数或其他文字。")
+    day = int(value)
+    if not 1 <= day <= 23:
+        raise ValueError(f"请输入 1–23 的整数。你输入的第 {day} 个交易日在本月、下个月及其他月份都不存在。"
+                         "交易日不含周末及休市日，一个月最多只有 23 个工作日；2 月更少。设置未修改。")
+    return day
+
+
+def month_trading_days(settings, year: int, month: int, calendar=None) -> list[date]:
+    """Use the actual market calendar, including holidays. Never guess on failure."""
     first = date(year, month, 1)
+    last = date(year, month, month_calendar.monthrange(year, month)[1])
+    days = _calendar_dates(settings, first, last, calendar)
+    if not days:
+        raise StrategyUnavailable("交易日历没有返回该月数据，暂时无法确认通知日期。")
+    return days
+
+
+def _calendar_dates(settings, first, last, calendar=None):
     try:
         if calendar is None:
             qs = load_library()
             calendar = qs.AlpacaReadOnly(settings.alpaca_key, settings.alpaca_secret, settings.alpaca_trading_url, settings.alpaca_data_url, settings.alpaca_feed).calendar
-        days = sorted(item["date"] for item in calendar(first, first + timedelta(days=9)))
-        return date.fromisoformat(days[0])
-    except Exception:
-        log.warning("market calendar unavailable, using the first weekday as the first trading day")
-        return next(first + timedelta(days=i) for i in range(7) if (first + timedelta(days=i)).weekday() < 5)
+        days = sorted({date.fromisoformat(item["date"]) for item in calendar(first, last)})
+        days = [day for day in days if first <= day <= last and day.weekday() < 5]
+        if not days:
+            raise ValueError("empty market calendar")
+        return days
+    except Exception as exc:
+        raise StrategyUnavailable("暂时无法取得交易日历；不会用普通工作日代替交易日。") from exc
+
+
+def notice_date_preview(settings, today: date, day: int, completed=None, calendar=None) -> str:
+    """One calendar request covers this month and the next eleven months."""
+    first = today.replace(day=1)
+    months = []
+    for offset in range(12):
+        year, month0 = divmod(first.year * 12 + first.month - 1 + offset, 12)
+        months.append(date(year, month0 + 1, 1))
+    last_month = months[-1]
+    last = last_month.replace(day=month_calendar.monthrange(last_month.year, last_month.month)[1])
+    try:
+        days = _calendar_dates(settings, first, last, calendar)
+    except StrategyUnavailable:
+        return ("本月：交易日历暂不可用，尚未确认。\n下个月：交易日历暂不可用，尚未确认。\n"
+                "设置已保存，后续月份也尚未确认；调度会等取得真实交易日历后再判断。")
+    grouped = {month: [d for d in days if (d.year, d.month) == (month.year, month.month)] for month in months}
+    lines, missing, unknown = [], [], []
+    for i, month in enumerate(months):
+        sessions = grouped[month]
+        label = f"{'本月' if i == 0 else '下个月'}（{month:%Y-%m}）"
+        if not sessions:
+            unknown.append(month)
+            status = "日历数据缺失，尚未确认。"
+        elif day > len(sessions):
+            missing.append(month)
+            status = f"不能生效，只有 {len(sessions)} 个交易日；本月跳过。"
+        else:
+            target = sessions[day - 1]
+            status = f"可生效，对应 {target:%Y-%m-%d}。"
+            if i == 0 and completed == month.strftime("%Y-%m"):
+                status = f"对应 {target:%Y-%m-%d}，但本月已完成通知任务，不重复发送；新日期从下个月起适用。"
+            elif i == 0 and target < today:
+                status = f"对应 {target:%Y-%m-%d} 已过，本月不补发。"
+        if i < 2:
+            lines.append(f"{label}：{status}")
+    lines.append(f"已检查范围：{first:%Y-%m} 至 {last_month:%Y-%m}。")
+    if missing:
+        lines.append(f"范围内首次确定无法生效的月份：{missing[0]:%Y-%m}。")
+        lines.append("交易日不足、会跳过的月份：" + "、".join(f"{m:%Y-%m}（{len(grouped[m])} 个交易日）" for m in missing) + "。")
+        lines.append("其余有完整日历数据的月份都有对应交易日；不足的月份跳过后，后续符合条件的月份会恢复通知。")
+    elif not unknown:
+        lines.append("未来 12 个月均有这个交易日，范围内没有因交易日不足而失效的月份。")
+    else:
+        lines.append("有日历数据的月份均有这个交易日，但尚不能确定第一次失效的月份。")
+    if unknown:
+        lines.append("日历缺失、尚未确认的月份：" + "、".join(f"{m:%Y-%m}" for m in unknown) + "。")
+    lines.append(f"{last_month:%Y-%m} 之后尚未核实；实际执行以届时交易所日历为准。")
+    return "\n".join(lines)
+
+
+def first_trading_day(settings, year: int, month: int, calendar=None) -> date:
+    return month_trading_days(settings, year, month, calendar)[0]
+
+
+def due_notice_users(session, now: datetime, day: int, tz: str) -> list[str]:
+    local = now.astimezone(ZoneInfo(tz))
+    month = local.strftime("%Y-%m")
+    result = []
+    for prefs in session.scalars(select(NotificationPreference).join(User).where(
+            User.is_active, NotificationPreference.signals_enabled, NotificationPreference.auto_notice_day == day)):
+        if prefs.last_notice_month == month:
+            continue
+        if prefs.notice_attempt_date == local.date():
+            if prefs.notice_attempts >= MAX_PUSH_ATTEMPTS_PER_DAY:
+                continue
+            if prefs.notice_last_attempt_at and _naive_utc(now) - _naive_utc(prefs.notice_last_attempt_at) < timedelta(hours=1):
+                continue
+        result.append(prefs.user_id)
+    return result
 
 
 async def monthly_tick(context, now: datetime | None = None) -> None:
-    """Hourly job. Pushes only on the US first trading day of the month (see due_for_monthly_run), at/after the configured local hour."""
+    """Run once for today's subscribers; persist per-user completion and attempts."""
     app = context.application
     if not app.bot_data.get("strategy_autorun"):
         return
     tz, hour = app.bot_data.get("strategy_push", DEFAULT_PUSH)
-    with transaction(app.bot_data["session_factory"]) as session:
-        due = due_for_monthly_run(session, now, tz, hour)
-    if not due:
+    now = now or datetime.now(UTC)
+    local = now.astimezone(ZoneInfo(tz))
+    if local.weekday() >= 5 or local.hour < hour:
         return
+    lock = app.bot_data.setdefault("monthly_tick_lock", asyncio.Lock())
+    if lock.locked() or any(app.bot_data.get(key) and app.bot_data[key].locked()
+                            for key in ("strategy_lock", "strategy_notice_lock")):
+        return
+    async with lock:
+        await _monthly_tick(app, now, local, tz)
+
+
+async def _monthly_tick(app, now, local, tz):
     try:
         settings = strategy_settings()
-        today = (now or datetime.now(UTC)).astimezone(ZoneInfo(tz)).date()
-        if await asyncio.to_thread(first_trading_day, settings, today.year, today.month) != today:
+        today = local.date()
+        cache = app.bot_data.get("notice_calendar")
+        if cache is None or cache[0] != today:
+            days = await asyncio.to_thread(month_trading_days, settings, today.year, today.month)
+            app.bot_data["notice_calendar"] = (today, days)
+        else:
+            days = cache[1]
+        if today not in days:
             return
-        log.info("monthly strategy run: %s", await run_and_notify(app))
+        ordinal = days.index(today) + 1
+        with transaction(app.bot_data["session_factory"]) as session:
+            user_ids = due_notice_users(session, now, ordinal, tz)
+            for user_id in user_ids:
+                prefs = session.get(NotificationPreference, user_id)
+                prefs.notice_attempts = prefs.notice_attempts + 1 if prefs.notice_attempt_date == today else 1
+                prefs.notice_attempt_date = today
+                prefs.notice_last_attempt_at = now
+        if user_ids:
+            log.info("monthly strategy run: %s", await run_and_notify(
+                app, user_ids=user_ids, notice_month=local.strftime("%Y-%m"), notice_day=ordinal))
     except StrategyUnavailable as exc:
         log.warning("monthly strategy run skipped: %s", exc)
     except Exception:

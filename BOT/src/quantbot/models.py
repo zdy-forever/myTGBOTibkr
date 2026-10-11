@@ -9,6 +9,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Enum,
@@ -188,12 +189,18 @@ class AnnouncementDelivery(Base):
 
 class NotificationPreference(Base):
     __tablename__ = "notification_preferences"
+    __table_args__ = (CheckConstraint("auto_notice_day BETWEEN 1 AND 23", name="ck_notice_day"),)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     signals_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     announcements_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     quiet_start_hour: Mapped[int | None] = mapped_column(Integer)
     quiet_end_hour: Mapped[int | None] = mapped_column(Integer)
     timezone: Mapped[str] = mapped_column(String(64), default="UTC", nullable=False)
+    auto_notice_day: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
+    last_notice_month: Mapped[str | None] = mapped_column(String(7))
+    notice_attempt_date: Mapped[date | None] = mapped_column(Date)
+    notice_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    notice_last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class StrategyRun(Base):

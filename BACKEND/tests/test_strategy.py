@@ -156,3 +156,51 @@ def test_monthly_frequency_and_zero_score_floor_are_the_configured_defaults_and_
     monkeypatch.setitem(config.STRATEGY, 'min_buy_score', top + 1)
     high = signals_for_user(run, empty, SETTINGS, now=NOW)
     assert high.signals == [] and high.status == 'no_candidates'
+
+
+def test_extra_holdings_are_scored_without_changing_buy_pool_or_other_users():
+    class ExtraSec(FakeSec):
+        def tickers(self):
+            mapping, rows = super().tickers()
+            return {**mapping, 'LMT': 20, 'OTHER': 21}, rows
+
+    bars = make_bars(SYMS + ['LMT', 'OTHER'], end=pd.Timestamp('2026-10-09', tz='UTC'))
+    engine_ = StrategyEngine(SETTINGS, FakeMarket(bars), ExtraSec(), load_pool=lambda: POOL, now=lambda: NOW)
+    base = engine_.run()
+    expanded = engine_.run(extra_symbols=['LMT', 'OTHER', 'MISSING'])
+    assert expanded.status == 'ok'
+    assert expanded.symbols == base.symbols and expanded.unscored == base.unscored and expanded.pool == base.pool
+    assert set(expanded.holding_symbols) == {'LMT', 'OTHER'}
+    assert 'MISSING' in expanded.holding_unscored
+    assert set(user_scores(expanded, {'LMT': 1000})) == set(SYMS) | {'LMT'}
+    assert user_scores(expanded, {}) == user_scores(base, {})
+    empty = parse_portfolio_csv('Company,Shares Held,Average Price\ncurrent_cash,0,200 USD\n')
+    before = signals_for_user(base, empty, SETTINGS, now=NOW)
+    after = signals_for_user(expanded, empty, SETTINGS, now=NOW)
+    assert after.summary == before.summary
+    assert after.signals == before.signals
+    restored = type(expanded).from_dict(expanded.to_dict())
+    assert restored.holding_symbols == expanded.holding_symbols
+    legacy = base.to_dict()
+    legacy.pop('holding_symbols')
+    legacy.pop('holding_unscored')
+    assert type(base).from_dict(legacy).holding_symbols == {}
+
+
+@pytest.mark.parametrize('cash,kind', [(0, 'K1A_REPLACE'), (5000, 'K5X_TRIM')])
+def test_outside_holding_can_be_sold_but_never_bought(cash, kind):
+    run = run_for()
+    run.holding_symbols['LMT'] = dict(price=100.0, sleeves=[], p_native=30., v_native=0., f_native=0., q_native=0., beta=[1., 0., 0.])
+    run.prices['LMT'] = 100.
+    portfolio = parse_portfolio_csv(f'Company,Shares Held,Average Price\ncurrent_cash,0,{cash} USD\nLMT,100,100 USD\n')
+    data = signals_for_user(run, portfolio, SETTINGS, now=NOW)
+    assert [(s.kind, s.action) for s in data.signals] == [(kind, 'SELL'), (kind, 'BUY')]
+    assert data.signals[0].symbol == 'LMT' and data.signals[1].symbol in run.symbols
+    assert data.summary['pool'] == len(SYMS) and 'LMT' not in data.summary['buyable_symbols']
+    # Even when the outside holding has the best score, it cannot become a buy candidate.
+    run.holding_symbols['LMT'].update(p_native=0., v_native=25., f_native=15., q_native=5.)
+    portfolio.holdings['LMT'].shares = 0.001
+    portfolio.cash = 200
+    data = signals_for_user(run, portfolio, SETTINGS, now=NOW)
+    assert all(s.symbol != 'LMT' for s in data.signals if s.action == 'BUY')
+    assert 'LMT' not in data.summary['buyable_symbols']

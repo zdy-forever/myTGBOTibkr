@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import io
 import logging
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import desc, select
 from telegram import (
@@ -229,8 +231,9 @@ async def edit_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     with transaction(context.application.bot_data["session_factory"]) as session:
         user = _require(session, update, context)
         PortfolioService().update_position(session, user, symbol, shares=shares, average_cost=cost,
-                                           exchange=exchange, actor=update.effective_user.id)
-    await query.edit_message_text(f"已更新 {symbol.upper()}。")
+                                           exchange=exchange, actor=update.effective_user.id, record_sale=True)
+        prompt, markup = _sale_cooldown_prompt(session, user.id)
+    await query.edit_message_text(f"已更新 {symbol.upper()}。" + prompt, reply_markup=markup)
     return ConversationHandler.END
 
 
@@ -253,9 +256,47 @@ async def remove_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     symbol, exchange = context.user_data.pop("remove")
     with transaction(context.application.bot_data["session_factory"]) as session:
         user = _require(session, update, context)
-        PortfolioService().remove_position(session, user, symbol, exchange, actor=update.effective_user.id)
-    await query.edit_message_text(f"已删除 {symbol.upper()}。")
+        PortfolioService().remove_position(session, user, symbol, exchange, actor=update.effective_user.id, record_sale=True)
+        prompt, markup = _sale_cooldown_prompt(session, user.id)
+    await query.edit_message_text(f"已删除 {symbol.upper()}。" + prompt, reply_markup=markup)
     return ConversationHandler.END
+
+
+def _sale_cooldown_prompt(session, user_id):
+    session.flush()
+    row = session.scalar(select(Transaction).where(Transaction.user_id == user_id)
+                         .order_by(Transaction.id.desc()).limit(1))
+    if row is None or "sale_cooldown" not in (row.after_data or {}):
+        return "", None
+    return ("\n\n要把卖出的股票加入冷却期吗？（默认设置：加入）\n"
+            "已默认加入；如果只是修改记录、没有实际卖出，请选择「不加入」。",
+            InlineKeyboardMarkup([[
+                InlineKeyboardButton("加入（默认）", callback_data=f"sale-cooldown:{row.id}:yes"),
+                InlineKeyboardButton("不加入", callback_data=f"sale-cooldown:{row.id}:no"),
+            ]]))
+
+
+async def sale_cooldown_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    _, row_id, choice = query.data.split(":")
+    with transaction(context.application.bot_data["session_factory"]) as session:
+        try:
+            user = _require(session, update, context)
+        except PermissionError:
+            await query.answer("请先使用 /start 注册。", show_alert=True)
+            return
+        row = session.get(Transaction, int(row_id))
+        setting = (row.after_data or {}).get("sale_cooldown") if row and row.user_id == user.id else None
+        if setting is None:
+            await query.answer("这条记录不可用。", show_alert=True)
+            return
+        if not setting["answered"]:
+            setting = {"enabled": choice == "yes", "answered": True}
+            row.after_data = {**row.after_data, "sale_cooldown": setting}
+        text = (f"已将 {row.symbol} 加入冷却期。" if setting["enabled"] else
+                "本次卖出记录不加入冷却期；持仓修改已保存，其他卖出记录产生的冷却期不受影响。")
+    await query.answer()
+    await query.edit_message_text(text)
 
 
 async def cash_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -327,7 +368,7 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             user = _require(session, update, context)
             settings = strategy.strategy_settings()
             row = strategy.latest_completed(session)
-            fresh = row is not None and strategy.is_fresh(row)
+            fresh = row is not None and strategy.is_fresh(row) and strategy.covers_holdings(session, user.id, row)
             text = strategy.check_text(session, user.id, row, settings) if row is not None else ""
             recent = None if fresh else strategy.recent_attempt(session)
             user_id = user.id
@@ -414,8 +455,50 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             field = context.args[0] + "_enabled"
             setattr(prefs, field, not getattr(prefs, field))
         text = (f"🔔 <b>通知设置</b>\n每月策略推送：{'开 ✅' if prefs.signals_enabled else '关 ⛔'}\n公告通知：{'开 ✅' if prefs.announcements_enabled else '关 ⛔'}\n\n"
-                "切换：/settings signals 或 /settings announcements")
+                f"自动通知日期：每月第 {prefs.auto_notice_day} 个美股交易日\n\n"
+                "切换：/settings signals 或 /settings announcements\n修改日期：/auto_notice_date 5")
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+async def auto_notice_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from . import strategy_service as strategy
+
+    app = context.application
+    try:
+        if len(context.args) > 1:
+            raise ValueError("只接受一个整数，例如 /auto_notice_date 5。设置未修改。")
+        day = strategy.parse_notice_day(context.args[0]) if context.args else None
+        with transaction(app.bot_data["session_factory"]) as session:
+            user = _require(session, update, context)
+            prefs = session.get(NotificationPreference, user.id)
+            if day is not None:
+                prefs.auto_notice_day = day
+            day, completed, enabled = prefs.auto_notice_day, prefs.last_notice_month, prefs.signals_enabled
+    except PermissionError:
+        await update.message.reply_text("请先使用 /start 注册。")
+        return
+    except ValueError as exc:
+        await update.message.reply_text(str(exc))
+        return
+    tz, hour = app.bot_data.get("strategy_push", strategy.DEFAULT_PUSH)
+    today = datetime.now(ZoneInfo(tz)).date()
+    text = (f"{'已设置' if context.args else '当前设置'}：每月第 {day} 个美股交易日通知，只影响你自己。\n"
+            f"通知时间：{tz} {hour:02d}:00 后的定时检查。\n"
+            "用法：/auto_notice_date 5；不带数字可查看当前设置。\n"
+            "交易日不含周末及休市日。当月交易日不足则跳过，不顺延、不提前；当月已通知过也不会重复通知。")
+    if day >= 19:
+        text += f"\n⚠️ 日期较靠后，2 月等短月份可能没有第 {day} 个交易日。"
+    if day >= 22:
+        text += f"\n⚠️ 2 月即使是闰年也最多只有 21 个工作日，因此不会有第 {day} 个交易日通知。"
+    try:
+        text += "\n\n" + await asyncio.to_thread(strategy.notice_date_preview, strategy.strategy_settings(), today, day, completed)
+    except strategy.StrategyUnavailable:
+        text += "\n本月、下个月及后续月份：交易日历暂不可用，尚未确认。设置已保留，取得真实交易日历后才能确认。"
+    if not enabled:
+        text += "\n你的策略通知目前已关闭，可用 /settings signals 开启。"
+    if not app.bot_data.get("strategy_autorun"):
+        text += "\n系统自动推送尚未开启；设置已保存，管理员开启后生效。"
+    await update.message.reply_text(text)
 
 
 async def announce_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -517,10 +600,14 @@ def configure_application(application: Application, accounts: AccountService, fa
     for command, handler in [("help", help_command), ("portfolio", portfolio), ("import", import_start), ("export", export_command), ("history", history), ("check", check), ("signals", signals), ("cooldown", cooldown), ("unbind", unbind_start), ("help_import", help_import), ("help_faq", help_faq), ("settings", settings), ("users", users_command), ("stats", stats_command), ("health", health), ("runstrategy", run_strategy)]:
         application.add_handler(CommandHandler(command, handler))
     application.add_handler(CallbackQueryHandler(unbind_confirm, pattern=r"^unbind:"))
+    application.add_handler(CommandHandler("auto_notice_date", auto_notice_date))
+    application.add_handler(CallbackQueryHandler(sale_cooldown_confirm, pattern=r"^sale-cooldown:\d+:(yes|no)$"))
     application.add_handler(MessageHandler(filters.Document.FileExtension("csv"), csv_document))
     application.add_error_handler(_error)
     if application.job_queue:
-        from .strategy_service import monthly_tick
+        from .strategy_service import monthly_tick, retry_pending_notifications
 
         application.job_queue.run_repeating(monthly_tick, interval=3600, first=120, name="monthly-strategy")
+        application.job_queue.run_repeating(retry_pending_notifications, interval=3600, first=60,
+                                            name="strategy-notification-retry")
     return application

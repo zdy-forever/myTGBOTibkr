@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
+from datetime import UTC, datetime
 from html import escape as esc
+from zoneinfo import ZoneInfo
 
 DISCLAIMER = "仅供参考，不构成投资建议；系统不会下单，买卖由你自己决定。"
 DISCLAIMER_HTML = f"⚠️ <i>{DISCLAIMER}</i>"
@@ -21,23 +23,23 @@ def _amount_text(signal: dict) -> str:
     return f"约 ${signal['amount_usd']:,.0f}{share_text}"
 
 
-def _detail_text(signal: dict) -> str:
-    parts = []
-    if signal.get("rank"):
-        parts.append(f"排名第 {signal['rank']}")
-    parts.append(KIND_TITLE.get(signal["kind"], signal["kind"]))
-    return " · ".join(parts)
-
-
 def signal_line(signal: dict, *, split: bool = False) -> str:
     """One suggestion as plain text (stored in user_signals.recommendation and used in the push)."""
     icon, verb = ("🔴", "卖出") if signal["action"] == "SELL" else ("🟢", "买入")
-    return f"{icon} {verb} {signal['symbol']} {_amount_text(signal)}\n    {_detail_text(signal)}"
+    return f"{icon} {verb} {signal['symbol']} {_amount_text(signal)}"
 
 
 def signal_html(signal: dict) -> str:
     icon, verb = ("🔴", "卖出") if signal["action"] == "SELL" else ("🟢", "买入")
-    return f"{icon} <b>{verb} {esc(signal['symbol'])}</b>  {esc(_amount_text(signal))}\n　<i>{esc(_detail_text(signal))}</i>"
+    return f"{icon} <b>{verb} {esc(signal['symbol'])}</b>  {esc(_amount_text(signal))}"
+
+
+def public_recommendation(text: str) -> str:
+    """Also hide explanatory lines on pending messages saved by older versions."""
+    first = text.splitlines()[0] if text else ""
+    for title in KIND_TITLE.values():
+        first = first.replace(f"【{title}】", "")
+    return first.strip()
 
 
 def render_user_signals(data: dict) -> str:
@@ -55,9 +57,6 @@ def render_user_signals(data: dict) -> str:
         lines += [signal_html(s) for s in signals]
     else:
         lines.append("💡 <b>操作建议</b>：本月没有。")
-    top = summary.get("top_candidates") or []
-    if top:
-        lines += ["", "📈 <b>排名靠前的可买入</b>", esc(" › ".join(sym for sym, _ in top[:6]))]
     notes = [f"ℹ️ {esc(_note(n))}" for n in data.get("notes", [])[:4]]
     if notes:
         lines += [""] + notes
@@ -69,27 +68,30 @@ def render_check(run, scores: dict, held_values: dict, data: dict, min_buy_score
     """/check for one user. `scores` = that user's scores for every scored stock (their own D included), `data` = UserSignals.to_dict()."""
     total_held = sum(held_values.values())
     summary = data.get("summary") or {}
-    equity = summary.get("equity") or total_held or 1.0
+    stock_value = total_held or 1.0
+    buyable = set(summary["buyable_symbols"]) if "buyable_symbols" in summary else None
 
-    ranked = sorted(scores.items(), key=lambda kv: (-kv[1]["total"], kv[0]))
+    ranked = sorted(((s, sc) for s, sc in scores.items() if s in run.symbols), key=lambda kv: (-kv[1]["total"], kv[0]))
     rank = {s: i for i, (s, _) in enumerate(ranked, 1)}
 
     def row(symbol, sc):
-        ok = sc["gate_ok"] and sc["total"] >= min_buy_score
+        ok = symbol in buyable if buyable is not None else sc["gate_ok"] and sc["total"] >= min_buy_score
         flag = "📌" if symbol in held_values else ("✅" if ok else "🔒")
-        held_note = f"  持仓{held_values[symbol] / equity:.0%}" if symbol in held_values else ""
+        held_note = f"  持仓{held_values[symbol] / stock_value:.0%}" if symbol in held_values else ""
         return f"{rank[symbol]:>2}  {flag} {esc(symbol):<6}{held_note}"
 
-    lines = ["📊 <b>策略检查</b>", f"📅 行情日期 {esc(run.as_of_bar or '无')}　更新于 {esc(run.started_at[5:16].replace('T', ' '))} UTC", "",
+    updated = datetime.fromisoformat(run.finished_at or run.started_at)
+    updated = (updated if updated.tzinfo else updated.replace(tzinfo=UTC)).astimezone(ZoneInfo("Asia/Shanghai"))
+    lines = ["📊 <b>策略检查</b>", f"📅 行情日期 {esc(run.as_of_bar or '无')}\n更新于 {updated:%Y-%m-%d %H:%M}（北京时间）", "",
              f"🏆 <b>排名前 {min(top, len(ranked))}</b>（共 {len(ranked)} 只参与排名）", "<pre>" + "\n".join(row(s, sc) for s, sc in ranked[:top]) + "</pre>"]
     mine = sorted(((s, scores[s]) for s in held_values if s in scores), key=lambda kv: (-kv[1]["total"], kv[0]))
     if mine:
-        rows = [f"{i:>2}  📌 {esc(s):<6} 持仓{held_values[s] / equity:.0%}" for i, (s, _) in enumerate(mine, 1)]       # ranked among the holdings themselves: 1, 2, 3, ...
-        lines += ["💼 <b>你的持仓排名</b>", "<pre>" + "\n".join(rows) + "</pre>"]
+        rows = [f"{i:>2}  📌 {esc(s):<6} 持仓{held_values[s] / stock_value:.0%}" for i, (s, _) in enumerate(mine, 1)]
+        lines += ["💼 <b>你的持仓排名</b>", "<i>占比按股票市值计算，不含现金</i>", "<pre>" + "\n".join(rows) + "</pre>"]
     unscored = [s for s in held_values if s not in scores]
     if unscored:
-        lines.append("⚪ 没有评分的持仓（不在股票池，或缺少数据）：" + esc("、".join(sorted(unscored))))
-    lines += ["<i>✅可买入　🔒暂不可买　📌你已持有</i>", "", "━━━━━━━━━━━━━━", "", render_user_signals(data)]
+        lines.append("⚪ 暂无法评分的持仓（必要数据不足）：" + esc("、".join(sorted(unscored))))
+    lines += ["<i>✅符合买入条件　🔒暂不符合买入条件（不等于冷却期）　📌你已持有</i>", "", "━━━━━━━━━━━━━━", "", render_user_signals(data)]
     return "\n".join(lines)
 
 
@@ -99,11 +101,11 @@ def render_cooldowns(blocked: dict, protected: dict, now) -> str:
     live_protected = sorted((until, s) for s, until in protected.items() if until > now)
     if not live_blocked and not live_protected:
         return "🧊 目前没有冷却期的股票。"
-    lines = ["🧊 <b>冷却期内的股票</b>", "<i>根据你以前收到的换仓/减仓建议</i>"]
+    lines = ["🧊 <b>冷却期内的股票</b>", "<i>根据你记录的实际卖出及冷却期选择</i>"]
     if live_blocked:
-        lines += ["", "⛔ <b>暂不会再建议买入</b>", "<pre>" + "\n".join(f"{esc(s):<6} 到 {until:%Y-%m-%d}" for until, s in live_blocked) + "</pre>"]
+        lines += ["", "⛔ <b>暂不会再建议买入</b>", "<pre>" + "\n".join(esc(s) for _, s in live_blocked) + "</pre>"]
     if live_protected:
-        lines += ["", "🛡 <b>暂不会建议卖出</b>", "<pre>" + "\n".join(f"{esc(s):<6} 到 {until:%Y-%m-%d}" for until, s in live_protected) + "</pre>"]
+        lines += ["", "🛡 <b>暂不会建议卖出</b>", "<pre>" + "\n".join(esc(s) for _, s in live_protected) + "</pre>"]
     lines += ["", "<i>这只影响系统给你的建议；你自己想买卖什么不受限制。</i>"]
     return "\n".join(lines)
 
@@ -113,4 +115,10 @@ def _note(note: str) -> str:
         return "你的现金为 0，无法给出买入金额；用 /cash 填写可投入的现金后再查看。"
     if note.startswith("no buyable candidate"):
         return "目前没有符合条件的可买入标的。"
-    return note
+    if ": no market price" in note:
+        return note.split(": no market price", 1)[0] + "：暂无行情价格，暂按你填写的平均成本估值。"
+    if ": amount in " in note:
+        return note.split(": amount in ", 1)[0] + "：非美元持仓未纳入分析。"
+    if note.startswith("cash in "):
+        return "非美元现金未纳入分析。"
+    return "部分必要数据暂不可用。"

@@ -117,6 +117,36 @@ def test_held_symbols_carry_no_owner_or_quantity(factory):
         assert svc.held_symbols(session) == {"AAA", "ZZZ"}
 
 
+def test_portfolio_preserves_same_ticker_across_exchanges_and_currencies(factory):
+    uid = add_user(factory, 1, cash="200", positions=[("AAA", "2")])
+    add_user(factory, 2, positions=[("AAA", "999")])
+    with factory.begin() as session:
+        for exchange, currency, shares, cost in [
+            ("NASDAQ", "USD", "3", "50"),
+            ("NYSE", "EUR", "7", "20"),
+            ("LSE", "USD", "4", "30"),
+        ]:
+            session.add(Position(user_id=uid, symbol="AAA", exchange=exchange,
+                                 currency=currency, shares=Decimal(shares), average_cost=Decimal(cost)))
+        session.add(Position(user_id=uid, symbol="FOREIGN", exchange="LSE",
+                             currency="USD", shares=Decimal("1"), average_cost=Decimal("10")))
+    with factory.begin() as session:
+        portfolio = svc.portfolio_of(session, uid)
+        assert portfolio.holdings["AAA"].shares == 5
+        assert portfolio.holdings["AAA"].avg_price == 70  # (2 * 100 + 3 * 50) / 5
+        assert portfolio.holdings["AAA@NYSE:EUR"].shares == 7
+        assert portfolio.holdings["AAA@LSE:USD"].shares == 4
+        assert len(portfolio.holdings) == 4
+        assert svc.held_symbols(session) == {"AAA"}  # foreign tickers are not sent to Alpaca
+        data = svc.signals_for(session, uid, make_run(), SETTINGS, NOW)
+        assert data["summary"]["equity"] == 830  # cash + US market value + foreign USD cost
+        assert any("AAA@NYSE:EUR" in n and "ignored" in n for n in data["notes"])
+        assert any("AAA@LSE:USD" in n and "average price" in n for n in data["notes"])
+        assert all("@" not in s["symbol"] for s in data["signals"])
+        text = svc.check_text(session, uid, svc.store_run(session, make_run())[0], SETTINGS, NOW)
+        assert "AAA@LSE:USD" in text and "FOREIGN@LSE:USD" in text
+
+
 class FakeBot:
     def __init__(self, fail_for=()):
         self.sent, self.fail_for = [], set(fail_for)
@@ -147,6 +177,83 @@ async def test_delivery_sends_one_message_per_user_and_isolates_failures(factory
     assert [chat for chat, _ in bot.sent] == [1, 2]
 
 
+async def test_retry_job_resumes_after_month_completed_and_restart(factory, monkeypatch):
+    monkeypatch.setattr(svc, "strategy_settings", lambda: SETTINGS)
+    add_user(factory, 1, cash="200")
+    add_user(factory, 2, cash="200")
+    with factory.begin() as session:
+        svc.store_run(session, fresh_run())
+    app = SimpleNamespace(bot=FakeBot(fail_for={2}), bot_data={"session_factory": factory})
+    result = await svc.run_and_notify(app)
+    assert (result["sent"], result["failed"]) == (1, 1)
+    with factory.begin() as session:
+        assert svc.latest_completed(session).metadata_json["monthly_notified_at"]
+    # A fresh application has no in-memory delivery state and autorun is off.
+    restarted = SimpleNamespace(bot=FakeBot(), bot_data={"session_factory": factory, "strategy_autorun": False})
+    await svc.retry_pending_notifications(SimpleNamespace(application=restarted))
+    await svc.retry_pending_notifications(SimpleNamespace(application=restarted))
+    assert [chat for chat, _ in restarted.bot.sent] == [2]
+    with factory.begin() as session:
+        assert all(s.notified_at for s in session.scalars(select(UserSignal)))
+
+
+async def test_retry_job_stops_at_five_attempts_and_respects_preferences(factory):
+    failed = add_user(factory, 1, cash="200")
+    disabled = add_user(factory, 2, cash="200")
+    with factory.begin() as session:
+        row, _ = svc.store_run(session, make_run())
+        row_id = row.id
+    svc.generate_for_all_users(factory, row_id, SETTINGS)
+    with factory.begin() as session:
+        session.get(NotificationPreference, disabled).signals_enabled = False
+    app = SimpleNamespace(bot=FakeBot(fail_for={1}), bot_data={"session_factory": factory})
+    context = SimpleNamespace(application=app)
+    for _ in range(7):
+        await svc.retry_pending_notifications(context)
+    with factory.begin() as session:
+        rows = session.scalars(select(UserSignal)).all()
+        assert all(s.notification_attempts == 5 for s in rows if s.user_id == failed)
+        assert all(s.notification_attempts == 0 for s in rows if s.user_id == disabled)
+    assert app.bot.sent == []
+
+
+async def test_overlapping_delivery_does_not_send_twice(factory):
+    import asyncio
+
+    add_user(factory, 1, cash="200")
+    with factory.begin() as session:
+        row, _ = svc.store_run(session, make_run())
+        row_id = row.id
+    svc.generate_for_all_users(factory, row_id, SETTINGS)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class SlowBot(FakeBot):
+        async def send_message(self, *args, **kwargs):
+            entered.set()
+            await release.wait()
+            await super().send_message(*args, **kwargs)
+
+    app = SimpleNamespace(bot=SlowBot(), bot_data={"session_factory": factory})
+    first = asyncio.create_task(svc.deliver_pending(app))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        assert await svc.deliver_pending(app) == (0, 0)
+    finally:
+        release.set()
+        await first
+    assert len(app.bot.sent) == 1
+
+
+def test_notification_retry_is_scheduled_independently_of_monthly_job():
+    from telegram.ext import Application
+    from quantbot.bot import configure_application
+
+    app = configure_application(Application.builder().token("123456:TEST").build(), None, None)
+    jobs = {j.name: j for j in app.job_queue.jobs()}
+    assert jobs["strategy-notification-retry"].callback is svc.retry_pending_notifications
+    assert jobs["monthly-strategy"].callback is svc.monthly_tick
+
+
 MON = datetime(2026, 11, 2, 2, 30, tzinfo=UTC)          # Monday 2026-11-02 10:30 in UTC+8 = Sunday 21:30 ET: the evening before the US open of the first trading day
 
 
@@ -169,7 +276,7 @@ def test_monthly_push_window_is_local_daytime_of_a_weekday_and_ignores_check_run
         assert svc.due_for_monthly_run(session, datetime(2026, 12, 1, 2, 30, tzinfo=UTC))         # next month
 
 
-def test_first_trading_day_comes_from_the_calendar_and_falls_back_to_the_first_weekday():
+def test_first_trading_day_comes_from_the_calendar_and_never_guesses_on_failure():
     from datetime import date
 
     cal = lambda start, end: [{"date": "2026-11-03"}, {"date": "2026-11-02"}, {"date": "2026-11-04"}]
@@ -179,7 +286,8 @@ def test_first_trading_day_comes_from_the_calendar_and_falls_back_to_the_first_w
 
     def broken(start, end):
         raise RuntimeError("calendar down")
-    assert svc.first_trading_day(SETTINGS, 2026, 11, calendar=broken) == date(2026, 11, 2)         # 2026-11-01 is a Sunday
+    with pytest.raises(svc.StrategyUnavailable):
+        svc.first_trading_day(SETTINGS, 2026, 11, calendar=broken)
 
 
 async def test_monthly_tick_pushes_only_on_the_first_trading_day(factory, accounts, monkeypatch):
@@ -188,14 +296,15 @@ async def test_monthly_tick_pushes_only_on_the_first_trading_day(factory, accoun
     monkeypatch.setattr(svc, "strategy_settings", lambda: SETTINGS)
     ran = []
 
-    async def fake_run(application, force=False):
+    async def fake_run(application, force=False, **kwargs):
         ran.append(1)
         return {"status": "completed"}
     monkeypatch.setattr(svc, "run_and_notify", fake_run)
     app = FakeApp(factory, accounts)
     context = SimpleNamespace(application=app)
+    add_user(factory, 1)
     app.bot_data["strategy_autorun"] = False
-    monkeypatch.setattr(svc, "first_trading_day", lambda *a, **k: date(2026, 11, 2))
+    monkeypatch.setattr(svc, "month_trading_days", lambda *a, **k: [date(2026, 11, 2), date(2026, 11, 3)])
     await svc.monthly_tick(context, MON)
     assert not ran                                                                                # autorun off
     app.bot_data["strategy_autorun"] = True
@@ -358,8 +467,9 @@ def test_help_topics_exist_fit_telegram_and_cover_every_registered_command():
 
 async def test_cooldown_command_shows_only_the_callers_own_rules(factory, accounts):
     from quantbot import bot
+    from quantbot.services import PortfolioService
 
-    uid = add_user(factory, 1, cash="200")
+    uid = add_user(factory, 1, cash="200", positions=[("AAA", "5")])
     add_user(factory, 2, cash="200")
     update, context, message = handler_args(factory, accounts, 1)
     await bot.cooldown(update, context)
@@ -370,7 +480,11 @@ async def test_cooldown_command_shows_only_the_callers_own_rules(factory, accoun
         ref = svc._reference_signal(session, row, run, "AAA")
         session.add(UserSignal(user_id=uid, signal_id=ref.id, action=svc.SignalAction.SELL, recommendation="x", created_at=datetime.now(UTC)))
     await bot.cooldown(update, context)
-    assert "AAA" in message.texts[1] and "到 20" in message.texts[1] and "天" not in message.texts[1]
+    assert "目前没有冷却期" in message.texts[1]  # a suggestion alone is never a sale
+    with factory.begin() as session:
+        PortfolioService().update_position(session, session.get(User, uid), "AAA", shares="3", actor=1, record_sale=True)
+    await bot.cooldown(update, context)
+    assert "AAA" in message.texts[2] and "到 20" not in message.texts[2] and "天" not in message.texts[2]
     update2, context2, message2 = handler_args(factory, accounts, 2)
     await bot.cooldown(update2, context2)
     assert "AAA" not in message2.texts[0]
@@ -654,7 +768,8 @@ def test_users_see_ranks_never_scores():
     text = render_check(run, scores, {"EEE": 100.0}, data, 0) + render_user_signals(data) + signal_line(sig)
     for hidden in ("91.7", "88.6", "85.5", "85.6", "79.3", "75.5", "评分"):
         assert hidden not in text, hidden
-    assert " 1  ✅ AAA" in text and "排名第 3" in text and "排名前" in text and "AAA › CCC" in text
+    assert " 1  ✅ AAA" in text and "排名前" in text
+    assert all(hidden not in text for hidden in ("排名第 3", "AAA › CCC", "本月买入", "排名靠前的可买入"))
     assert " 5  📌 EEE" in text and "持仓" in text                                      # in the overall top table
     assert " 1  📌 EEE" in text and "全体第" not in text                                  # in the holdings list the first holding is number 1
 

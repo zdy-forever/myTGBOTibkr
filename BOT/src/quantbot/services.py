@@ -160,7 +160,8 @@ class PortfolioService:
         return position
 
     def update_position(self, session: Session, user: User, symbol: str, *, actor: int,
-                        shares=None, average_cost=None, currency=None, exchange: str = "US") -> Position:
+                        shares=None, average_cost=None, currency=None, exchange: str = "US",
+                        record_sale: bool = False) -> Position:
         position = self.get_position(session, user.id, symbol, exchange)
         if not position:
             raise LookupError("position not found")
@@ -171,18 +172,23 @@ class PortfolioService:
             position.average_cost = decimal_value(average_cost)
         if currency is not None:
             position.currency = normalize_currency(currency)
+        after = self._snapshot(position)
+        if record_sale and position.shares < Decimal(before["shares"]):
+            after["sale_cooldown"] = {"enabled": True, "answered": False}
         self._audit(session, user.id, TransactionType.POSITION_UPDATE, actor, position.symbol,
-                    position.exchange, before, self._snapshot(position))
+                    position.exchange, before, after)
         return position
 
-    def remove_position(self, session: Session, user: User, symbol: str, exchange: str = "US", *, actor: int) -> None:
+    def remove_position(self, session: Session, user: User, symbol: str, exchange: str = "US", *, actor: int,
+                        record_sale: bool = False) -> None:
         position = self.get_position(session, user.id, symbol, exchange)
         if not position:
             raise LookupError("position not found")
         before = self._snapshot(position)
         session.delete(position)
         self._audit(session, user.id, TransactionType.POSITION_DELETE, actor,
-                    position.symbol, position.exchange, before, None)
+                    position.symbol, position.exchange, before,
+                    {"sale_cooldown": {"enabled": True, "answered": False}} if record_sale else None)
 
     @staticmethod
     def cash(session: Session, user_id: str) -> CashAccount:

@@ -37,7 +37,9 @@ The portfolio can also be built from the host's DB rows: `Portfolio(holdings={'I
 
 `signals_for_user` reads only the portfolio passed in and the shared run. The D (diversification) component, the only one that depends on a portfolio, is computed per user and is not
 stored in the shared run. Do not pass one user's portfolio when computing another's, and do not put users' holdings in log lines or notifications of other users.
-`extra_symbols` only asks Alpaca for prices of symbols; it carries no quantities or owners.
+`extra_symbols` asks for prices and SEC fundamentals, with no quantities or owners. Outside-pool components live in `RunResult.holding_symbols`, separately from the buy pool;
+missing-data reasons live in `holding_unscored`. Their peer reference is the existing buy pool; they never enter its peer samples. Per-user scoring includes only the caller's own
+outside holdings, which may be sold but never become buy candidates. Legacy run payloads without these fields remain readable.
 
 ## Example handlers (python-telegram-bot, adapt names to the host)
 
@@ -61,9 +63,10 @@ async def runstrategy_cmd(update, context):                          # admin onl
 
 ## Scheduling
 
-Run it once a month on the first US trading day (the strategy is monthly), from the host's existing hourly background loop: if no `ok` run exists for the current month, start one,
-then compute `user_signals` for every user with signal notifications on. Use an idempotency key such as `strategy_version + month`, like the deposit plans do. Run it in the same
-process; no second bot process is needed. Only the pool refresh (N-PORT, from the Hugging Face mirror) touches the larger download; it happens at most once per 400 days or on `refresh_pool=True`.
+The host's hourly loop uses each user's selected monthly US trading-day ordinal (default 1, set by `/auto_notice_date`). On each scheduled day it runs the shared analysis once,
+then computes `user_signals` only for that day's subscribers. Per-user completion months and attempt counters are persisted in `notification_preferences`; a completed market run alone
+does not complete every user's month. Months without the selected ordinal are skipped. Market calendar failures are retried without guessing holiday dates.
+Run it in the same process; no second bot process is needed. Only the pool refresh (N-PORT, from the Hugging Face mirror) touches the larger download; it happens at most once per 400 days or on `refresh_pool=True`.
 
 ## `blocked`
 

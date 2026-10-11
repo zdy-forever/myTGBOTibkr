@@ -44,11 +44,12 @@ class UserSignals:
 
 def user_scores(run, held_values):
     """Totals for one user: shared components + this user's D (beta distance to the user's own portfolio, 10 when empty)."""
+    components = {**run.symbols, **{s: c for s, c in run.holding_symbols.items() if s in held_values}}
     total = sum(v for v in held_values.values() if v > 0)
-    parts = [v / total * np.array(run.symbols[s]['beta']) for s, v in held_values.items() if s in run.symbols and v > 0] if total > 0 else []
+    parts = [v / total * np.array(components[s]['beta']) for s, v in held_values.items() if s in components and v > 0] if total > 0 else []
     pbeta = np.sum(parts, axis=0) if parts else None
     scores = {}
-    for s, c in run.symbols.items():
+    for s, c in components.items():
         d = logic.d_points(c['beta'], pbeta)
         sc = logic.score(c['p_native'], c['v_native'], c['f_native'], d, c['q_native'])
         if sc is not None:
@@ -91,8 +92,8 @@ def signals_for_user(run, portfolio, settings, deposit_usd=None, blocked=None, n
     target = logic.target_weight(len(pool_symbols), config.STRATEGY['target_weight_floor'])
     weights = {s: h['value'] / equity for s, h in held.items()} if equity > 0 else {}
     blocked, protected = blocked or {}, protected or {}
-    ranked = [s for s in sorted(scores, key=lambda s: (-scores[s]['total'], s)) if scores[s]['gate_ok'] and scores[s]['total'] >= config.STRATEGY['min_buy_score'] and weights.get(s, 0.0) < target and not (s in blocked and now < blocked[s])]
-    summary = dict(equity=equity, cash=cash, target_weight=target, deposit=deposit, top_candidates=[(s, round(scores[s]['total'], 2)) for s in ranked[:8]], scored=len(scores), pool=len(pool_symbols))
+    ranked = [s for s in sorted(scores, key=lambda s: (-scores[s]['total'], s)) if s in run.symbols and scores[s]['gate_ok'] and scores[s]['total'] >= config.STRATEGY['min_buy_score'] and weights.get(s, 0.0) < target and not (s in blocked and now < blocked[s])]
+    summary = dict(equity=equity, cash=cash, target_weight=target, deposit=deposit, top_candidates=[(s, round(scores[s]['total'], 2)) for s in ranked[:8]], buyable_symbols=ranked, scored=len(run.symbols), pool=len(pool_symbols))
 
     def sig(kind, action, sym, usd, reason):
         sc = scores.get(sym)
