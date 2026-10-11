@@ -1,4 +1,4 @@
-# strategy1：加强型 QQQ
+# strategy1：月度定投个股(加强型 QQQ)
 
 这是 Bot 当前开放的策略 1，对应可安装的 `quant_strategy` Python 包。策略 2 仍在研发中。
 

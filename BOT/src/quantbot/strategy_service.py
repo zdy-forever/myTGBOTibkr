@@ -401,7 +401,7 @@ def check_text(session: Session, user_id: str, row: StrategyRun, settings, now: 
     scores = user_scores(run, held_values)
     data = signals_for(session, user_id, run, settings, now)
     allocation = allocation_fraction(session, user_id) * 100
-    return (f"策略 1：加强型 QQQ · 资金权重 {allocation:g}%\n" +
+    return (f"策略 1：月度定投个股(加强型 QQQ) · 资金权重 {allocation:g}%\n" +
             render_check(run, scores, held_values, data, qs_config.STRATEGY["min_buy_score"]))
 
 

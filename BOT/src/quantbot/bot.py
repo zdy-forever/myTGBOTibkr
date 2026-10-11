@@ -111,11 +111,11 @@ _REGISTERED_MENU = _PUBLIC_MENU + [("subscribe", "查看或开通订阅"),
                                    ("chat", "给管理员留言"), ("unbind", "解绑账户")]
 _STRATEGY_MENU = _REGISTERED_MENU + [
     ("strategy_weights", "查看或分配策略资金权重"),
-    ("strategy", "策略管理：启停与资金权重"), ("strategy1", "选择策略 1：加强型 QQQ"),
+    ("strategy", "策略管理：启停与资金权重"), ("strategy1", "选择策略 1：月度定投个股(加强型 QQQ)"),
     ("strategy2", "策略 2：研发中")]
 _PREMIUM_MENU = _REGISTERED_MENU + [
     ("strategy_weights", "查看或分配策略资金权重"),
-    ("strategy", "策略管理：启停与资金权重"), ("strategy1", "选择策略 1：加强型 QQQ"),
+    ("strategy", "策略管理：启停与资金权重"), ("strategy1", "选择策略 1：月度定投个股(加强型 QQQ)"),
     ("strategy1_off", "停用策略 1"), ("strategy2", "策略 2：研发中"),
     ("check", "查看策略建议"), ("portfolio", "查看我的持仓"),
     ("add", "添加持仓"), ("edit", "修改持仓"), ("remove", "删除持仓"),
@@ -1297,7 +1297,7 @@ async def cooldown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except strategy.StrategyUnavailable as exc:
         await update.message.reply_text(str(exc))
         return
-    await update.message.reply_text("策略 1：加强型 QQQ\n" + render_cooldowns(blocked, protected, datetime.now(UTC)), parse_mode=ParseMode.HTML)
+    await update.message.reply_text("策略 1：月度定投个股(加强型 QQQ)\n" + render_cooldowns(blocked, protected, datetime.now(UTC)), parse_mode=ParseMode.HTML)
 
 
 def run_started(row) -> datetime:

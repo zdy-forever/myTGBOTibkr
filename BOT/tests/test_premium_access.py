@@ -225,7 +225,7 @@ async def test_strategy_selection_is_per_premium_user_and_strategy_two_stays_una
     await bot.authorization_gate(make_update(menu_message), ctx)
     await bot.strategy_command(make_update(menu_message), ctx)
     assert "/strategy1" in menu_message.replies[0][0]
-    assert "加强型 QQQ" in menu_message.replies[0][0]
+    assert "月度定投个股(加强型 QQQ)" in menu_message.replies[0][0]
     assert "研发中" in menu_message.replies[0][0]
 
     select_message = Message(text="/strategy1")
@@ -282,7 +282,7 @@ async def test_premium_start_requires_strategy_then_shows_strategy_one_welcome(f
     await bot.strategy_one(make_update(Message(text="/strategy1")), ctx)
     selected_start = Message(text="/start")
     await bot.start(make_update(selected_start), ctx)
-    assert "策略 1：加强型 QQQ" in selected_start.replies[0][0]
+    assert "策略 1：月度定投个股(加强型 QQQ)" in selected_start.replies[0][0]
     assert "先用 /add 或 /import" in selected_start.replies[0][0]
     assert "/strategy1_off" in selected_start.replies[0][0]
     assert "strategy1_off" in {item.command for item in bot._menu_for("whitelist")}

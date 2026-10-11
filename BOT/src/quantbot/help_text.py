@@ -32,7 +32,7 @@ QUICK_PENDING = """✅ 手机号已验证，但尚未开通 Premium。
 
 STRATEGY_PICK = """✅ Premium 已开通。下一步：请先启用至少一个可用策略。
 
-/strategy1　策略 1：加强型 QQQ（当前开放）
+/strategy1　策略 1：月度定投个股(加强型 QQQ)（当前开放）
 /strategy2　策略 2：研发中，暂不可选
 /strategy　打开策略管理：查看状态、启用、停用及分配权重
 /strategy_weights　查看或分配策略资金权重
@@ -41,7 +41,7 @@ STRATEGY_PICK = """✅ Premium 已开通。下一步：请先启用至少一个�
 
 启用策略 1 后，才能使用它的 /check、/auto_notice_date 等功能。没有股票持仓也可以开始。"""
 
-STRATEGY1_WELCOME = """📈 <b>策略 1：加强型 QQQ</b>
+STRATEGY1_WELCOME = """📈 <b>策略 1：月度定投个股(加强型 QQQ)</b>
 
 已为你启用策略 1。
 1. 先用 /add 或 /import 录入持仓；没有持仓可跳过。
@@ -59,7 +59,7 @@ COMMON_HELP = """📘 <b>通用使用说明</b>
 输入 / 打开快捷菜单。需要参数的命令可以先发送，再在下一条填写；/cancel 在输入过程中随时取消。
 
 /strategy　策略管理入口：查看状态、启用、停用及分配权重
-/strategy1　启用策略 1：加强型 QQQ
+/strategy1　启用策略 1：月度定投个股(加强型 QQQ)
 /strategy2　策略 2 尚在研发，暂未开放
 /strategy_weights　分配可投资总资金。单策略默认 100%；多策略须手动分配，总和必须为 100%，最多两位小数
 /subscribe　查看订阅状态或开通 Premium
@@ -72,7 +72,7 @@ COMMON_HELP = """📘 <b>通用使用说明</b>
 
 以下按已启用策略分别说明。未启用的策略不显示操作说明；停用后对应说明也会移除。"""
 
-STRATEGY1_HELP = f"""📈 <b>策略 1：加强型 QQQ · 使用说明</b>
+STRATEGY1_HELP = f"""📈 <b>策略 1：月度定投个股(加强型 QQQ) · 使用说明</b>
 
 1️⃣ <b>录入你的持仓和现金</b>
 /add 逐只添加　/import 导入 CSV
@@ -125,7 +125,7 @@ STRATEGY_HELP_BLOCKS = {
     "strategy2": "📈 <b>策略 2 · 使用说明</b>\n策略 2 正在研发中，尚无可用功能；正式开放后这里会显示它自己的操作说明。",
 }
 
-STRATEGY_NAMES = {"strategy1": "策略 1：加强型 QQQ", "strategy2": "策略 2（研发中）"}
+STRATEGY_NAMES = {"strategy1": "策略 1：月度定投个股(加强型 QQQ)", "strategy2": "策略 2（研发中）"}
 STRATEGY_WELCOME_BLOCKS = {"strategy1": STRATEGY1_WELCOME, "strategy2": STRATEGY_HELP_BLOCKS["strategy2"]}
 COMMON_FAQ = """❓ <b>账户常见问题</b>
 首次使用请 /start 验证本人手机号，获得 Premium 后用 /strategy 启用策略。
@@ -144,7 +144,7 @@ def strategy_name(strategy_id: str) -> str:
 def strategy_management_text(weights: dict, allocation_valid: bool) -> str:
     enabled = set(weights)
     current = "、".join(strategy_name(key) for key in sorted(enabled)) or "暂无，请先启用下方可用策略"
-    lines = ["📊 策略管理", f"已启用：{current}", "", "📈 策略 1：加强型 QQQ"]
+    lines = ["📊 策略管理", f"已启用：{current}", "", "📈 策略 1：月度定投个股(加强型 QQQ)"]
     if "strategy1" in enabled:
         weight = weights["strategy1"]
         lines += ["状态：已启用 · 权重 " + (f"{weight:g}%" if weight is not None else "待分配"),

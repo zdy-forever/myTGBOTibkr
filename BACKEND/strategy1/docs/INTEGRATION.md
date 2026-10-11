@@ -1,4 +1,4 @@
-# Integrating strategy1 (加强型 QQQ) into the multi-user bot
+# Integrating strategy1 (月度定投个股(加强型 QQQ)) into the multi-user bot
 
 The module is a **library**. It has no Telegram, no database and no scheduler, and it starts no process: the host bot (single process, long polling) imports it.
 It never places an order; every output is a suggestion with a disclaimer.
