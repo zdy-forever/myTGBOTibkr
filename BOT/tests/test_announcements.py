@@ -1,11 +1,14 @@
+import asyncio
+from datetime import timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
+import pytest
 from sqlalchemy import func, select
-from telegram.error import Forbidden
+from telegram.error import Forbidden, RetryAfter
 
 from quantbot import bot
-from quantbot.announcements import publish_announcement
+from quantbot.announcements import _telegram_call, pending_announcement_ids, publish_announcement
 from quantbot.db import transaction
 from quantbot.models import Announcement, AnnouncementDelivery
 
@@ -158,3 +161,57 @@ async def test_important_command_previews_confirms_and_rejects_stale_buttons(fac
         assert item.important and item.content == "final draft"
     await tasks.pop()
     app.bot.pin_chat_message.assert_awaited()
+
+
+@pytest.mark.parametrize("duration_mode", ["false", "true"])
+async def test_retry_after_supports_seconds_and_timedelta(monkeypatch, duration_mode):
+    monkeypatch.setenv("PTB_TIMEDELTA", duration_mode)
+    method = AsyncMock(side_effect=[RetryAfter(timedelta(seconds=2)), "ok"])
+    with patch("quantbot.announcements.asyncio.sleep", new=AsyncMock()) as sleep:
+        assert await _telegram_call(method) == "ok"
+        sleep.assert_awaited_once_with(2.2)
+    assert method.await_count == 2
+
+
+@pytest.mark.parametrize("phase", ["before_publish", "send", "pin"])
+async def test_recovery_after_restart_resumes_confirmed_announcement(factory, accounts, phase):
+    with transaction(factory) as session:
+        accounts.register(session, 1, "+61400000001")
+        item = Announcement(content="confirmed", important=True, created_by_telegram_id=999)
+        session.add(item)
+        session.flush()
+        aid = item.id
+    api = SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=777)),
+                          pin_chat_message=AsyncMock(), unpin_chat_message=AsyncMock())
+    if phase != "before_publish":
+        getattr(api, "send_message" if phase == "send" else "pin_chat_message").side_effect = asyncio.CancelledError()
+        with pytest.raises(asyncio.CancelledError):
+            await publish_announcement(SimpleNamespace(bot_data={"session_factory": factory}, bot=api), aid)
+    assert pending_announcement_ids(factory) == [aid]
+    # Recreate in-memory state as on a process restart, retaining only the database.
+    fresh_api = SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=778)),
+                                pin_chat_message=AsyncMock(), unpin_chat_message=AsyncMock())
+    app = SimpleNamespace(bot_data={"session_factory": factory}, bot=fresh_api)
+    await bot.resume_announcements(SimpleNamespace(application=app))
+    user_sends = [call for call in fresh_api.send_message.call_args_list if call.args[0] == 1]
+    assert len(user_sends) == (0 if phase == "pin" else 1)
+    fresh_api.pin_chat_message.assert_awaited_once_with(chat_id=1, message_id=777 if phase == "pin" else 778)
+    assert pending_announcement_ids(factory) == []
+    calls = fresh_api.send_message.await_count
+    await bot.resume_announcements(SimpleNamespace(application=app))
+    assert fresh_api.send_message.await_count == calls
+
+
+async def test_recovery_ignores_finished_and_exhausted_deliveries(factory, accounts):
+    with transaction(factory) as session:
+        accounts.register(session, 1, "+61400000001")
+        item = Announcement(content="confirmed", created_by_telegram_id=999)
+        session.add(item)
+        session.flush()
+        aid = item.id
+    api = SimpleNamespace(send_message=AsyncMock(side_effect=Forbidden("blocked")))
+    app = SimpleNamespace(bot_data={"session_factory": factory}, bot=api)
+    await publish_announcement(app, aid)
+    assert pending_announcement_ids(factory) == []
+    await bot.resume_announcements(SimpleNamespace(application=app))
+    assert api.send_message.await_count == 5

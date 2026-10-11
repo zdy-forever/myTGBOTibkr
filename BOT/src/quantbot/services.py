@@ -29,7 +29,6 @@ from .models import (
 )
 from .security import PhoneProtector
 
-
 MAX_DECIMAL_VALUE = Decimal(100000000000)
 
 

@@ -17,6 +17,8 @@ def sqlite_path(database_url: str) -> Path:
 
 
 def create_backup(source: Path, directory: Path) -> Path:
+    if not source.is_file():
+        raise FileNotFoundError(source)
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / f"quantbot-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.db"
     with sqlite3.connect(source) as src, sqlite3.connect(target) as dst:
@@ -57,3 +59,7 @@ def main() -> None:
         target = create_backup(source, settings.backup_dir)
         prune_backups(settings.backup_dir, settings.backup_retention_days)
         print(target)
+
+
+if __name__ == "__main__":
+    main()

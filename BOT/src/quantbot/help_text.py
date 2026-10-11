@@ -5,7 +5,7 @@ from __future__ import annotations
 LINE = "━━━━━━━━━━━━━━"
 
 QUICK_NEW = f"""📘 <b>这是什么</b>
-按你自己的持仓和现金，给出美股的买卖建议。
+这是一个美股投资组合助手：你记录持仓与现金，启用策略后查看买卖建议和每月提醒。
 
 ⚠️ <i>仅供参考，不构成投资建议；系统不会下单，也不连接你的券商账户，买卖由你自己决定。</i>
 
@@ -14,13 +14,15 @@ QUICK_NEW = f"""📘 <b>这是什么</b>
 1️⃣ 发 /start
 2️⃣ 点输入框下方的按钮「📱 分享我的手机号」，在弹出的框里选「分享」
 3️⃣ 授权后会检查免费白名单及付费订阅
+4️⃣ 获得 Premium 后，发 /strategy 启用策略
+5️⃣ 按策略欢迎页录入持仓和现金，再查看建议
 
 <i>用手机版 Telegram；不能手动输入；号码只用来识别你本人，默认只保存不可逆的指纹。隐私说明：/privacy</i>"""
 
 QUICK_PENDING = """✅ 手机号已验证，但尚未开通 Premium。
 400 Telegram Stars / 30 天（约 US$7.99，实际价格因购买渠道而异）。
 
-/subscribe　开通订阅
+/subscribe　开通订阅，页面可联系管理员咨询优惠
 /chat　给管理员留言
 /start　查看当前权限
 /privacy　查看手机号与付款隐私说明
@@ -28,30 +30,76 @@ QUICK_PENDING = """✅ 手机号已验证，但尚未开通 Premium。
 /unbind　解绑并删除账户数据
 /cancel　取消当前操作"""
 
-QUICK = f"""📘 <b>快速上手</b>
+STRATEGY_PICK = """✅ Premium 已开通。下一步：请先启用至少一个可用策略。
+
+/strategy1　策略 1：加强型 QQQ（当前开放）
+/strategy2　策略 2：研发中，暂不可选
+/strategy　打开策略管理：查看状态、启用、停用及分配权重
+/strategy_weights　查看或分配策略资金权重
+
+单策略默认 100%；同时启用多个策略时，须手动分配权重，总和为 100%，未分配完成会暂停建议和推送。目前只有策略 1 开放，策略 2 尚不能启用。
+
+启用策略 1 后，才能使用它的 /check、/auto_notice_date 等功能。没有股票持仓也可以开始。"""
+
+STRATEGY1_WELCOME = """📈 <b>策略 1：加强型 QQQ</b>
+
+已为你启用策略 1。
+1. 先用 /add 或 /import 录入持仓；没有持仓可跳过。
+2. 用 /cash 设置当前可投入现金，不含股票市值。
+3. 用 /portfolio 核对，再发 /check 查看建议。首次准备数据可能需要几分钟。
+
+单策略默认使用 100% 的可投资资金；多策略须通过 /strategy_weights 手动分配。这里记录的是你填报的数据，不会自动同步券商。成交后需更新持仓和现金。
+
+/auto_notice_date 设置每月提醒交易日；/settings 控制通知开关；/strategy 打开策略管理，/strategy1_off 可停用本策略。
+/help 完整使用说明；/chat 给管理员留言。
+
+⚠️ <i>仅供参考，不构成投资建议；机器人不会自动下单。</i>"""
+
+COMMON_HELP = """📘 <b>通用使用说明</b>
+输入 / 打开快捷菜单。需要参数的命令可以先发送，再在下一条填写；/cancel 在输入过程中随时取消。
+
+/strategy　策略管理入口：查看状态、启用、停用及分配权重
+/strategy1　启用策略 1：加强型 QQQ
+/strategy2　策略 2 尚在研发，暂未开放
+/strategy_weights　分配可投资总资金。单策略默认 100%；多策略须手动分配，总和必须为 100%，最多两位小数
+/subscribe　查看订阅状态或开通 Premium
+/chat　给管理员留言，留言及回复保存 14 天后自动删除
+/privacy　隐私说明
+/unbind　解绑并删除账户数据，发送后点确认，无法撤销；已有投资数据建议先导出备份
+/help　通用说明及所有已启用策略的专属说明
+/help_faq　常见问题
+/cancel　在输入过程中随时取消
+
+以下按已启用策略分别说明。未启用的策略不显示操作说明；停用后对应说明也会移除。"""
+
+STRATEGY1_HELP = f"""📈 <b>策略 1：加强型 QQQ · 使用说明</b>
 
 1️⃣ <b>录入你的持仓和现金</b>
 /add 逐只添加　/import 导入 CSV
 /cash 填写可以投入的现金
+没有持仓可跳过 /add。/cash 填当前总余额，不含股票市值，会替换旧余额。建议先用 /portfolio 核对。
 
 2️⃣ <b>随时查看建议</b>
-/check 今天的打分，和按你的持仓给出的买卖建议
+/check 最近可用行情的排名，以及按你的持仓和现金生成的建议
 
 3️⃣ <b>每月自动推送</b>
-默认每月美股第一个交易日开盘前（北京时间白天）发给你。用 /auto_notice_date 修改你自己的通知日期。建议按你当时的持仓和现金单独计算，每个人收到的不一样。
+默认每月第一个美股交易日提醒，实际时间以 /auto_notice_date 的显示为准。需要 Premium 有效、策略已启用、权重有效、策略通知已开启且系统自动推送可用。用 /settings 查看通知开关。
+
+4️⃣ <b>实际成交后更新记录</b>
+买入新股票用 /add，已有股票数量变化用 /edit，全部卖出用 /remove；再用 /cash 更新剩余现金。机器人不会自动同步成交。
 
 ⚠️ <i>仅供参考，不构成投资建议；系统不会下单，也不连接你的券商账户，买卖由你自己决定。</i>
 
 {LINE}
 🧭 <b>全部命令</b>（点命令名就能发送）
-需要参数的命令可先单独发送，再在下一条消息输入参数；输入有误会提示重试，/cancel 可取消。
+输入 / 可打开快捷菜单。先发送命令，再按提示在下一条填写内容；/cancel 取消输入。命令后面的数字是参数，例如 /auto_notice_date 5 中的 5 表示第 5 个交易日，不是每月 5 号。
 
 📊 <b>查看</b>（直接发送，不需要参数）
-/check　今天的排名和你的买卖建议
+/strategy1_off　停用策略 1，保留持仓、现金与历史记录
+/check　最近可用行情的排名和你的买卖建议
 /cooldown　暂不建议买入/卖出的股票
 /portfolio　我的持仓和现金；较多时用按钮翻页，或发 <code>/portfolio 2</code> 查看第 2 页
 /history　最近 20 条账户操作
-/chat　给管理员留言。发送后输入内容；管理员回复会通过机器人发给你，留言和回复保存 14 天后自动删除
 
 ✏️ <b>录入</b>
 /add　添加持仓。发送后输入「代码 股数 平均成本 币种」，例如 <code>ISRG 0.55 374.21 USD</code>
@@ -64,17 +112,78 @@ QUICK = f"""📘 <b>快速上手</b>
 /export　直接发送，会收到一份 CSV 文件
 
 ⚙️ <b>设置</b>
+本策略按 /strategy_weights 设置的资金比例计算建议。当前仅开放策略 1，可发送 <code>/strategy_weights 1=100</code>。
 /settings　查看通知设置。<code>/settings signals</code> 开/关每月推送，<code>/settings announcements</code> 开/关公告
 /auto_notice_date　修改个人通知日期，例如 <code>/auto_notice_date 5</code> 表示第 5 个美股交易日；<code>/auto_notice_date random</code> 每月随机选一个交易日；不带参数查看设置及日期预览
-/unbind　解绑手机号并删除我的全部数据。发送后点确认；建议先 /export 备份
-/cancel　在输入过程中随时取消
-/subscribe　查看订阅状态或开通 Premium
-/privacy　手机号与付款隐私说明
 
 📖 <b>更多说明</b>
 /help_import　CSV 导入格式
 /help_faq　常见问题"""
 
+STRATEGY_HELP_BLOCKS = {
+    "strategy1": STRATEGY1_HELP,
+    "strategy2": "📈 <b>策略 2 · 使用说明</b>\n策略 2 正在研发中，尚无可用功能；正式开放后这里会显示它自己的操作说明。",
+}
+
+STRATEGY_NAMES = {"strategy1": "策略 1：加强型 QQQ", "strategy2": "策略 2（研发中）"}
+STRATEGY_WELCOME_BLOCKS = {"strategy1": STRATEGY1_WELCOME, "strategy2": STRATEGY_HELP_BLOCKS["strategy2"]}
+COMMON_FAQ = """❓ <b>账户常见问题</b>
+首次使用请 /start 验证本人手机号，获得 Premium 后用 /strategy 启用策略。
+单策略默认 100%；同时启用多个策略后，用 /strategy_weights 手动分配，总和必须为 100%。
+机器人不连接券商，也不会自动下单或同步成交。
+/chat 可联系管理员，需先验证手机号，留言及回复保存 14 天后自动删除。
+/privacy 查看隐私说明；/unbind 确认后删除账户数据，无法撤销。
+/help 查看你当前已启用策略的专属使用说明。"""
+
+
+def strategy_name(strategy_id: str) -> str:
+    # Unknown database values are not interpolated into Telegram HTML.
+    return STRATEGY_NAMES.get(strategy_id, "未识别策略（暂不可用，请联系管理员）")
+
+
+def strategy_management_text(weights: dict, allocation_valid: bool) -> str:
+    enabled = set(weights)
+    current = "、".join(strategy_name(key) for key in sorted(enabled)) or "暂无，请先启用下方可用策略"
+    lines = ["📊 策略管理", f"已启用：{current}", "", "📈 策略 1：加强型 QQQ"]
+    if "strategy1" in enabled:
+        weight = weights["strategy1"]
+        lines += ["状态：已启用 · 权重 " + (f"{weight:g}%" if weight is not None else "待分配"),
+                  "/strategy1　查看本策略使用说明", "/strategy1_off　停用本策略"]
+    else:
+        lines += ["状态：未启用", "/strategy1　启用本策略（目前唯一开放的策略）"]
+    lines += ["", "🛠 策略 2：研发中，暂不能启用", "/strategy2　查看研发状态"]
+    if enabled:
+        lines += ["", "💰 资金权重"]
+        for key in sorted(enabled):
+            weight = weights[key]
+            lines.append(strategy_name(key) + "：" + (f"{weight:g}%" if weight is not None else "待分配"))
+        lines += ["✅ 权重有效，合计 100%。" if allocation_valid else
+                  "⚠️ 权重尚未分配完成，策略建议和推送暂停。",
+                  "/strategy_weights　查看或修改权重，按提示在下一条填写；/cancel 取消输入"]
+    else:
+        lines += ["", "下一步：发送 /strategy1 启用。单策略默认 100%，无需手动分配。"]
+    lines += ["", "多策略须手动分配可投资总资金比例，每项大于 0，最多两位小数，总和为 100%。",
+              "停用不卖出股票，也不删除持仓或现金；剩余策略不会自动重新分配权重。",
+              "/help　查看通用说明与所有已启用策略的专属说明",
+              "这里只管理策略，不会自动下单。建议和推送还需 Premium 有效；定时推送另需通知及系统开关开启。"]
+    return "\n".join(lines)
+
+
+def welcome_blocks(enabled: set[str]) -> list[str]:
+    return [STRATEGY_WELCOME_BLOCKS.get(key, "该策略暂不可用，请通过 /chat 联系管理员。")
+            for key in sorted(enabled)]
+
+
+def help_pages(enabled: set[str], *, admin: bool = False) -> list[str]:
+    """One bounded message per strategy; selection does not imply availability."""
+    common = COMMON_HELP + ("\n\n/admin_help　管理员命令说明书（管理功能无需启用投资策略）" if admin else "")
+    if not enabled:
+        return [common + "\n\n" + STRATEGY_PICK]
+    return [common] + [STRATEGY_HELP_BLOCKS[key] for key in sorted(enabled) if key in STRATEGY_HELP_BLOCKS]
+
+
+# Full strategy-1 reference for topic fallbacks and documentation checks.
+QUICK = COMMON_HELP + "\n\n" + STRATEGY1_HELP
 ADMIN_QUICK = QUICK + "\n\n🛡️ <b>管理员</b>\n/admin_help　查看管理员命令说明书"
 
 ADMIN_HELP = """🛡️ <b>管理员说明书</b>
@@ -110,13 +219,14 @@ ADMIN_HELP = """🛡️ <b>管理员说明书</b>
 /users　查看用户概况
 /stats　查看系统统计
 /health　检查 Bot 与数据库状态
-/runstrategy　立即运行策略，向已开启策略通知且有 Premium 权限的用户推送建议
+/runstrategy　立即运行策略 1，向已启用策略 1、权重有效、已开启策略通知且有 Premium 权限的用户推送建议
 
 <b>其他</b>
+管理员管理功能不要求启用投资策略；查看自己的投资建议仍须先启用策略。
 /help　普通用户命令
 /cancel　取消正在输入的操作"""
 
-CSV = f"""📥 <b>导入持仓</b>
+CSV = f"""📥 <b>策略 1 · 导入持仓</b>
 先发 /import，再发送 CSV 文件（UTF-8，不超过 1 MB）。示例，点一下可以复制：
 
 <pre>Company,Shares Held,Average Price
@@ -130,29 +240,36 @@ NVDA,3,120 USD</pre>
 • <code>current_cash</code> 这一行是现金：第二列固定填 <code>0</code>（填什么都不影响），第三列是金额和币种
 
 <b>要注意</b>
-• 已有的同名持仓不会被覆盖
+• 文件包含已有同名股票时，整次导入会被拒绝；修改已有持仓请用 /edit
+• current_cash 会替换现金余额，不会累加；不填这一行则保持原现金
 • 有错误会指出行号，这时整份文件都不会导入
 • 只分析美元（USD），其他币种会被忽略
-• /export 导出的文件格式相同，可以直接再导入
+• /export 导出的文件格式相同；已有持仓不能重复导入，恢复前请核对账户记录
 
 不想用文件：/add，按提示输入「股票代码 股数 平均成本 币种」，例如 <code>ISRG 0.55 374.21 USD</code>"""
 
-FAQ = """❓ <b>常见问题</b>
+FAQ = """❓ <b>策略 1 · 常见问题及账户说明</b>
 
 <b>/check 没有给出买卖建议？</b>
 可能是现金为 0（用 /cash 填写），或者目前没有符合条件的标的。底部的提示会说明。
 
 <b>数据日期不是今天？</b>
-行情和财报每天最多更新一次。上一次更新超过半天时，/check 会先显示旧结果，同时在后台更新，完成后自动把最新的再发给你（首次可能要几分钟）。
+行情日期是最近可用交易日，周末或休市时不一定是今天。共享数据超过半天等情况下，/check 会显示已有结果并后台更新；更新失败会提示重试，受重试间隔限制。首次准备数据可能需要几分钟。
 
-<b>为什么同一只股票别人看到的分数和我不一样？</b>
-分数会参考你自己的持仓，所以每个人看到的不完全一样。
+<b>为什么我的建议和别人不同？</b>
+建议参考你填报的持仓、现金及策略资金权重。请先用 /portfolio 核对记录。
+
+<b>多个策略的资金怎么算？</b>
+单策略默认 100%。同时启用多个策略后，用 /strategy_weights 手动分配，每项大于 0，总和为 100%，最多两位小数。百分比以持仓市值与现金合计为基准：例如 60%/40%，各策略按这个比例使用持仓份额和现金计算建议，原始持仓记录不变。目前策略 2 在研发中，只有 1=100 可用于已开放策略。
+
+<b>停用或修改权重会怎样？</b>
+/strategy1_off 停止策略 1 的建议与通知，保留持仓和现金。/strategy1 可重新启用。多策略停用一项后若权重不足 100%，须重新分配；不会自动把资金转给其他策略。权重修改后旧的待发送建议不再推送，当月已处理的定时提醒不会补发，可用 /check 重新查看。
 
 <b>会不会自动下单？</b>
 不会。没有任何下单功能，也不连接你的券商账户。
 
 <b>卖出后怎么更新？</b>
-部分卖出用 /edit 减少股数，全部卖出用 /remove 删除持仓。确认后会询问是否加入冷却期（默认设置：加入）。如果只是改错、没有实际卖出，选「不加入」。用 /cooldown 查看当前冷却中的股票。
+部分卖出用 /edit 填写剩余总股数，全部卖出用 /remove。确认后会询问是否加入冷却期（默认设置：加入）。如果只是改错、没有实际卖出，选「不加入」。持仓修改不会自动调整现金，请再用 /cash 填写成交后的现金余额。用 /cooldown 查看当前冷却中的股票。
 
 <b>我的数据别人看得到吗？</b>
 不会。每个人只用自己的持仓和现金计算，看到的也只有自己的结果。
@@ -164,7 +281,7 @@ FAQ = """❓ <b>常见问题</b>
 发 /unbind，确认后会删除你的手机号绑定、持仓、现金、操作记录和建议，不能撤销，建议先 /export 导出。之后随时可以用 /start 重新绑定。
 
 <b>怎么关闭每月推送？</b>
-/settings signals（再发一次就重新打开）。/check 随时可用。
+/settings signals（再发一次就重新打开）。Premium 有效且策略启用、权重有效时，/check 仍可手动查看。
 
 <b>怎么修改每月通知日期？</b>
 发 /auto_notice_date 5，设为每月第 5 个美股交易日；或发 /auto_notice_date random，每月随机选一个真实美股交易日。固定日期只接受 1–23 的整数，周末和休市日不算。回复会说明本月、下个月是否生效；固定模式还会检查未来 12 个月中哪些月份交易日不足。交易日不足则当月跳过，不自动提前或顺延；当月日期已过不补发，当月已通知过不重复发送。随机模式当月仅从设置之后的交易日中选。设置只影响自己，不会自动开启已关闭的通知。

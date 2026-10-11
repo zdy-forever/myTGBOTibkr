@@ -79,6 +79,15 @@ class User(Base):
     positions: Mapped[list[Position]] = relationship(back_populates="user")
 
 
+class UserStrategy(Base):
+    __tablename__ = "user_strategies"
+    __table_args__ = (CheckConstraint("weight_percent > 0 AND weight_percent <= 100", name="ck_strategy_weight"),)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    strategy_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    weight_percent: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), default=Decimal(100))
+    enabled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class AdminGrant(Base):
     __tablename__ = "admin_grants"
     telegram_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)

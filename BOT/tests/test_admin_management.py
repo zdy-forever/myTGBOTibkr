@@ -6,7 +6,7 @@ from telegram.ext import ApplicationHandlerStop
 from quantbot import bot
 from quantbot.config import Settings
 from quantbot.db import transaction
-from quantbot.models import AdminGrant, AdminPhoneGrant, CashAccount, Role, User
+from quantbot.models import AdminGrant, AdminPhoneGrant, CashAccount, Role, User, UserStrategy
 from quantbot.security import PhoneProtector
 from quantbot.services import AccountService
 
@@ -249,6 +249,7 @@ async def test_optional_settings_followup_and_remove_followup(factory):
     with transaction(factory) as session:
         user = accounts.register(session, 999, "+61400000999").user
         user_id = user.id
+        session.add(UserStrategy(user_id=user_id, strategy_id="strategy1"))
     ctx = context(factory, accounts)
     command = Message("/settings")
     await bot._staged_command_entry(update(command, 999), ctx)
@@ -285,7 +286,8 @@ async def test_staged_admin_input_still_checks_current_authorization(factory):
 async def test_new_command_abandons_previous_staged_input(factory):
     accounts = configured_accounts()
     with transaction(factory) as session:
-        accounts.register(session, 999, "+61400000999")
+        user = accounts.register(session, 999, "+61400000999").user
+        session.add(UserStrategy(user_id=user.id, strategy_id="strategy1"))
     ctx = context(factory, accounts)
     await bot._staged_command_entry(update(Message("/whitelist_add"), 999), ctx)
     assert "pending_command_args" in ctx.user_data
@@ -343,7 +345,8 @@ async def test_startup_publishes_scoped_slash_menus(factory):
 
     accounts = configured_accounts()
     with transaction(factory) as session:
-        accounts.register(session, 999, "+61400000999")
+        owner = accounts.register(session, 999, "+61400000999").user
+        session.add(UserStrategy(user_id=owner.id, strategy_id="strategy1"))
         accounts.register(session, 101, "+61400000001")
 
     class MenuBot:

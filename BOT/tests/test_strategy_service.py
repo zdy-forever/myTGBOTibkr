@@ -22,6 +22,7 @@ from quantbot.models import (  # noqa: E402
     StrategyRun,
     User,
     UserSignal,
+    UserStrategy,
 )
 from quantbot.strategy_text import DISCLAIMER, render_user_signals  # noqa: E402
 
@@ -48,6 +49,7 @@ def add_user(factory, telegram_id, *, cash="1000", positions=(), signals_enabled
         user = User(telegram_id=telegram_id, phone_fingerprint=f"fp{telegram_id}")
         session.add(user)
         session.flush()
+        session.add(UserStrategy(user_id=user.id, strategy_id="strategy1"))
         session.add(CashAccount(user_id=user.id, balance=Decimal(cash), currency="USD"))
         session.add(NotificationPreference(user_id=user.id, signals_enabled=signals_enabled))
         for symbol, shares in positions:
@@ -147,6 +149,16 @@ def test_portfolio_preserves_same_ticker_across_exchanges_and_currencies(factory
         assert "AAA@LSE:USD" in text and "FOREIGN@LSE:USD" in text
 
 
+def test_strategy_one_market_run_ignores_holdings_of_other_strategies(factory):
+    add_user(factory, 1, positions=[("AAA", "1")])
+    other = add_user(factory, 2, positions=[("ZZZ", "1")])
+    with factory.begin() as session:
+        session.delete(session.get(UserStrategy, (other, "strategy1")))
+        session.add(UserStrategy(user_id=other, strategy_id="strategy_future"))
+    with factory.begin() as session:
+        assert svc.held_symbols(session) == {"AAA"}
+
+
 class FakeBot:
     def __init__(self, fail_for=()):
         self.sent, self.fail_for = [], set(fail_for)
@@ -175,6 +187,27 @@ async def test_delivery_sends_one_message_per_user_and_isolates_failures(factory
     app.bot.fail_for.clear()
     assert await svc.deliver_pending(app) == (1, 0)                                          # only the failed user is retried
     assert [chat for chat, _ in bot.sent] == [1, 2]
+
+
+async def test_strategy_one_notifications_stop_when_disabled_and_old_retries_do_not_resume(factory):
+    user_id = add_user(factory, 1, cash="200")
+    with factory.begin() as session:
+        row, _ = svc.store_run(session, make_run())
+        row_id = row.id
+    assert svc.generate_for_all_users(factory, row_id, SETTINGS)["users"] == 1
+    with factory.begin() as session:
+        assert session.scalar(select(UserSignal).where(UserSignal.user_id == user_id)) is not None
+        session.delete(session.get(UserStrategy, (user_id, "strategy1")))
+        session.add(UserStrategy(user_id=user_id, strategy_id="strategy_future"))
+    app = SimpleNamespace(bot=FakeBot(), bot_data={"session_factory": factory})
+    with factory.begin() as session:
+        assert svc.due_notice_users(session, NOW, 1, "Asia/Shanghai", enforce_premium=False) == []
+    assert svc.generate_for_all_users(factory, row_id, SETTINGS)["users"] == 0
+    assert await svc.deliver_pending(app) == (0, 0)
+    with factory.begin() as session:
+        session.add(UserStrategy(user_id=user_id, strategy_id="strategy1"))
+    assert await svc.deliver_pending(app) == (0, 0)
+    assert app.bot.sent == []
 
 
 async def test_retry_job_resumes_after_month_completed_and_restart(factory, monkeypatch):
@@ -665,6 +698,7 @@ async def test_unbind_deletes_only_the_callers_data_after_confirmation_and_allow
         count = lambda model, col: session.scalar(select(func.count()).select_from(model).where(col == mine))
         assert session.get(User, mine) is None
         assert count(Position, Position.user_id) == count(CashAccount, CashAccount.user_id) == count(UserSignal, UserSignal.user_id) == count(NotificationPreference, NotificationPreference.user_id) == count(Transaction, Transaction.user_id) == 0
+        assert count(UserStrategy, UserStrategy.user_id) == 0
         assert session.get(User, other) is not None and session.scalar(select(func.count()).select_from(Position).where(Position.user_id == other)) == 1       # nobody else is touched
         assert session.scalar(select(func.count()).select_from(UserSignal).where(UserSignal.user_id == other)) == 1
     update, context, message = handler_args(factory, accounts, 1, app)
@@ -727,7 +761,8 @@ async def test_portfolio_pages_cover_all_positions_and_buttons_are_account_bound
 
     with factory.begin() as session:
         accounts.unregister(session, 999)
-        accounts.register(session, 999, "+61400000999")
+        recreated = accounts.register(session, 999, "+61400000999").user
+        session.add(UserStrategy(user_id=recreated.id, strategy_id="strategy1"))
     old_update, old_context, old_query = callback_args(factory, accounts, 999, next_data, app)
     await bot.portfolio_page(old_update, old_context)
     assert "旧账户" in old_query.answers[0][0][0]

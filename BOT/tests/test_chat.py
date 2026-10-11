@@ -90,8 +90,12 @@ async def test_bound_user_can_leave_persisted_message_and_admin_can_reply_after_
 
     # A new application simulates a restart; the database is the source of truth.
     restarted = App(factory, accounts)
-    update, context, query = callback(factory, accounts, 999, callback_data, app=restarted)
+    update, context, query = callback(
+        factory, accounts, 999, callback_data, app=restarted,
+        user_data={"pending_command_args": ("portfolio", datetime.now(UTC) + timedelta(minutes=5))},
+    )
     assert await bot.chat_reply_start(update, context) == bot.CHAT_REPLY_TEXT
+    assert "pending_command_args" not in context.user_data
     assert context.user_data["chat_reply_id"] == message_id
     reply_update, reply_context, reply_message = command(
         factory, accounts, 999, text="管理员回复内容", app=restarted, user_data=context.user_data)

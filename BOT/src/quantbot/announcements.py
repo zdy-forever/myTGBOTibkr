@@ -1,13 +1,27 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import or_, select
 from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 
 from .db import transaction
 from .models import Announcement, AnnouncementDelivery, NotificationPreference, User
+
+
+def pending_announcement_ids(factory) -> list[int]:
+    """Only confirmed announcements are stored; include crashes before first publish."""
+    pending = select(AnnouncementDelivery.id).where(
+        AnnouncementDelivery.announcement_id == Announcement.id,
+        AnnouncementDelivery.attempts < 5,
+        AnnouncementDelivery.unpinned_at.is_(None),
+        or_(AnnouncementDelivery.delivered_at.is_(None),
+            Announcement.important.is_(True) & AnnouncementDelivery.pinned_at.is_(None)),
+    ).exists()
+    with transaction(factory) as session:
+        return list(session.scalars(select(Announcement.id).where(
+            or_(Announcement.published_at.is_(None), pending)).order_by(Announcement.id)))
 
 
 async def publish_announcement(application, announcement_id: int) -> tuple[int, int]:
@@ -129,4 +143,5 @@ async def _telegram_call(method, *args, **kwargs):
         try:
             return await method(*args, **kwargs)
         except RetryAfter as exc:
-            await asyncio.sleep(float(exc.retry_after) + 0.2)
+            delay = exc.retry_after.total_seconds() if isinstance(exc.retry_after, timedelta) else float(exc.retry_after)
+            await asyncio.sleep(delay + 0.2)
