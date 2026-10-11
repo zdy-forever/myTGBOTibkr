@@ -47,7 +47,15 @@ from .chat import (
 from .csv_io import export_portfolio_csv, import_portfolio_csv
 from .db import transaction
 from .display import price, qty, render_portfolio_pages
-from .help_text import ADMIN_HELP, ADMIN_QUICK, QUICK, QUICK_NEW, QUICK_PENDING, help_for
+from .help_text import (
+    ADMIN_HELP,
+    ADMIN_QUICK,
+    QUICK_NEW,
+    QUICK_PENDING,
+    STRATEGY1_WELCOME,
+    STRATEGY_PICK,
+    help_for,
+)
 from .models import (
     AdminGrant,
     AdminPhoneGrant,
@@ -60,6 +68,7 @@ from .models import (
     SubscriptionPayment,
     Transaction,
     User,
+    UserStrategy,
 )
 from .services import (
     AccountService,
@@ -75,6 +84,7 @@ log = logging.getLogger(__name__)
 HISTORY_TEXT = {"position_create": "新增持仓", "position_update": "修改持仓", "position_delete": "删除持仓", "cash_set": "设置现金", "cash_adjust": "调整现金",
                 "plan_contribution": "定投入账", "csv_import": "导入 CSV"}
 CONTACT, ADD_DATA, EDIT_DATA, REMOVE_CONFIRM, CASH_DATA, ANNOUNCE_TEXT, ANNOUNCE_CONFIRM, CHAT_TEXT, CHAT_REPLY_TEXT, REMOVE_DATA = range(10)
+EDIT_CONFIRM = 10
 
 def _services(context: ContextTypes.DEFAULT_TYPE):
     return context.application.bot_data["accounts"], PortfolioService()
@@ -93,7 +103,12 @@ _PUBLIC_MENU = [("start", "开始或查看当前权限"), ("help", "使用说明
                 ("privacy", "隐私说明"), ("help_faq", "常见问题")]
 _REGISTERED_MENU = _PUBLIC_MENU + [("subscribe", "查看或开通订阅"),
                                    ("chat", "给管理员留言"), ("unbind", "解绑账户")]
+_STRATEGY_MENU = _REGISTERED_MENU + [
+    ("strategy", "查看和选择策略"), ("strategy1", "选择策略 1：加强型 QQQ"),
+    ("strategy1_off", "停用策略 1"), ("strategy2", "策略 2：研发中")]
 _PREMIUM_MENU = _REGISTERED_MENU + [
+    ("strategy", "查看和选择策略"), ("strategy1", "选择策略 1：加强型 QQQ"),
+    ("strategy1_off", "停用策略 1"), ("strategy2", "策略 2：研发中"),
     ("check", "查看策略建议"), ("portfolio", "查看我的持仓"),
     ("add", "添加持仓"), ("edit", "修改持仓"), ("remove", "删除持仓"),
     ("cash", "修改现金"), ("import", "导入 CSV"), ("export", "导出 CSV"),
@@ -114,17 +129,31 @@ _ADMIN_MENU = _PREMIUM_MENU + [
 
 def _menu_for(status: str) -> list[BotCommand]:
     items = (_ADMIN_MENU if status == "admin" else _PREMIUM_MENU if status in {"paid", "whitelist"}
+             else _STRATEGY_MENU + _ADMIN_MENU[len(_PREMIUM_MENU):] if status == "admin_strategy_required"
+             else _STRATEGY_MENU if status == "strategy_required"
              else _REGISTERED_MENU if status == "subscription_required" else _PUBLIC_MENU)
     return [BotCommand(command, description) for command, description in items]
 
 
-async def _refresh_user_menu(application, telegram_id: int, status: str | None = None) -> None:
+def _enabled_strategies(session, user_id: str) -> set[str]:
+    return set(session.scalars(select(UserStrategy.strategy_id).where(UserStrategy.user_id == user_id)))
+
+
+def _ui_status(session, accounts: AccountService, telegram_id: int) -> str:
+    status = accounts.access_status(session, telegram_id)
+    if status in {"admin", "whitelist", "paid"}:
+        user = accounts.by_telegram(session, telegram_id)
+        if user is None or session.get(UserStrategy, (user.id, "strategy1")) is None:
+            return "admin_strategy_required" if status == "admin" else "strategy_required"
+    return status
+
+
+async def _refresh_user_menu(application, telegram_id: int) -> None:
     setter = getattr(getattr(application, "bot", None), "set_my_commands", None)
     if setter is None:
         return
-    if status is None:
-        with transaction(application.bot_data["session_factory"]) as session:
-            status = application.bot_data["accounts"].access_status(session, telegram_id)
+    with transaction(application.bot_data["session_factory"]) as session:
+        status = _ui_status(session, application.bot_data["accounts"], telegram_id)
     try:
         await setter(_menu_for(status), scope=BotCommandScopeChat(telegram_id))
     except TelegramError:
@@ -139,11 +168,9 @@ async def initialize_command_menus(application: Application) -> None:
     except TelegramError:
         log.warning("could not publish default command menu", exc_info=True)
     with transaction(application.bot_data["session_factory"]) as session:
-        accounts = application.bot_data["accounts"]
-        users = [(user.telegram_id, accounts.access_status(session, user.telegram_id))
-                 for user in session.scalars(select(User).where(User.is_active))]
-    for telegram_id, status in users:
-        await _refresh_user_menu(application, telegram_id, status)
+        users = [user.telegram_id for user in session.scalars(select(User).where(User.is_active))]
+    for telegram_id in users:
+        await _refresh_user_menu(application, telegram_id)
         await asyncio.sleep(0.04)
 
 
@@ -157,20 +184,34 @@ def _access_text(status: str) -> str:
     return SUBSCRIPTION_OFFER
 
 
+def _welcome_text(status: str, strategies: set[str]) -> str:
+    access = _access_text(status)
+    if status == "subscription_required":
+        return access
+    if "strategy1" in strategies:
+        return access + "\n\n" + STRATEGY1_WELCOME + ("\n\n/admin_help　管理员命令说明" if status == "admin" else "")
+    return access + "\n\n" + STRATEGY_PICK + ("\n\n/admin_help　管理员命令说明" if status == "admin" else "")
+
+
 async def authorization_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """First handler group: no command, callback, document or payment bypasses access control."""
     # Telegram emits a service message when the bot pins an announcement. It
     # can appear to be from the bot itself; it is not a user registration attempt.
-    message = update.effective_message
-    if message and (getattr(message, "pinned_message", None) is not None or
-                    getattr(getattr(message, "from_user", None), "is_bot", False)):
+    # Callback queries refer to the bot's original message. Only ignore actual
+    # incoming service/bot messages, never the message attached to a callback.
+    incoming_message = update.message
+    if incoming_message and (getattr(incoming_message, "pinned_message", None) is not None or
+                             getattr(getattr(incoming_message, "from_user", None), "is_bot", False)):
         raise ApplicationHandlerStop
     if update.effective_user is None:
         raise ApplicationHandlerStop
+    message = update.effective_message
     accounts, _ = _services(context)
     with transaction(context.application.bot_data["session_factory"]) as session:
         status = accounts.access_status(session, update.effective_user.id)
-    words = (message.text or "").split(maxsplit=1) if message else []
+        user = accounts.by_telegram(session, update.effective_user.id)
+        enabled_strategy1 = bool(user and session.get(UserStrategy, (user.id, "strategy1")))
+    words = (update.message.text or "").split(maxsplit=1) if update.message else []
     command = words[0].split("@", 1)[0].lower() if words else ""
     if command.startswith("/") and command != "/cancel":
         getattr(context, "user_data", {}).pop("pending_command_args", None)
@@ -190,11 +231,22 @@ async def authorization_gate(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await message.reply_text("仅已验证的管理员可使用这个命令。" if status != "unregistered" else
                                      "请先使用 /start 验证本人的 Telegram 手机号。")
         raise ApplicationHandlerStop
-    if status in {"admin", "whitelist", "paid"}:
+    premium = status in {"admin", "whitelist", "paid"}
+    if status == "admin":
+        data = getattr(context, "user_data", {})
+        pending = data.get("pending_command_args", (None,))[0]
+        callback = update.callback_query.data or "" if update.callback_query else ""
+        if (command in ADMIN_COMMANDS or callback.startswith(("announce:", "chat-reply:")) or
+                not command.startswith("/") and not update.callback_query and
+                (f"/{pending}" in ADMIN_COMMANDS or "announcement_important" in data or data.get("chat_reply_id"))):
+            return
+    if premium and enabled_strategy1:
         return
     allowed = {"/start", "/help", "/help_import", "/help_faq", "/privacy", "/cancel"}
     if status != "unregistered":
         allowed.update({"/subscribe", "/unbind", "/chat"})
+        if premium:
+            allowed.update({"/strategy", "/strategy1", "/strategy1_off", "/strategy2"})
         if message and getattr(message, "successful_payment", None):
             return
         if update.callback_query and (update.callback_query.data or "").startswith("unbind:"):
@@ -207,12 +259,15 @@ async def authorization_gate(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     if not command.startswith("/") and (getattr(context, "user_data", {}) or {}).get("pending_command_args", (None,))[0] == "help":
         return
-    if status == "subscription_required":
-        await _refresh_user_menu(context.application, update.effective_user.id, status)
+    if status == "subscription_required" or premium:
+        await _refresh_user_menu(context.application, update.effective_user.id)
     if update.callback_query:
-        await update.callback_query.answer("请先验证手机号。" if status == "unregistered" else "请先开通 Premium。", show_alert=True)
+        await update.callback_query.answer("请先验证手机号。" if status == "unregistered" else
+                                           "请先开通 Premium。" if not premium else
+                                           "请先发送 /strategy1 选择策略。", show_alert=True)
     elif message:
-        await message.reply_text("请先使用 /start 验证本人的 Telegram 手机号。" if status == "unregistered" else SUBSCRIPTION_OFFER)
+        await message.reply_text("请先使用 /start 验证本人的 Telegram 手机号。" if status == "unregistered" else
+                                 SUBSCRIPTION_OFFER if not premium else STRATEGY_PICK)
     raise ApplicationHandlerStop
 
 
@@ -228,11 +283,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     accounts, _ = _services(context)
     with transaction(context.application.bot_data["session_factory"]) as session:
         status = accounts.access_status(session, update.effective_user.id)
-    await _refresh_user_menu(context.application, update.effective_user.id, status)
+        user = accounts.by_telegram(session, update.effective_user.id)
+        strategies = _enabled_strategies(session, user.id) if user else set()
+    await _refresh_user_menu(context.application, update.effective_user.id)
     if status != "unregistered":
-        await update.message.reply_text("👋 欢迎回来。\n\n" + _access_text(status) +
-                                        ("\n\n" + (ADMIN_QUICK if status == "admin" else QUICK)
-                                         if status != "subscription_required" else ""),
+        await update.message.reply_text("👋 欢迎回来。\n\n" + _welcome_text(status, strategies),
                                         parse_mode=ParseMode.HTML, reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
     await update.message.reply_text(BIND_TEXT, reply_markup=_contact_keyboard())
@@ -277,19 +332,18 @@ async def contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return CONTACT
     try:
         with transaction(context.application.bot_data["session_factory"]) as session:
-            accounts.register(session, update.effective_user.id, item.phone_number)
+            user = accounts.register(session, update.effective_user.id, item.phone_number).user
             status = accounts.access_status(session, update.effective_user.id)
+            strategies = _enabled_strategies(session, user.id)
     except ValueError as exc:
         text = "这个手机号已经绑定了另一个 Telegram 账号。为防止被冒用，不能自动换绑，请联系管理员核实后处理。" if "already bound" in str(exc) else str(exc)
         await update.message.reply_text(text, reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
-    await _refresh_user_menu(context.application, update.effective_user.id, status)
+    await _refresh_user_menu(context.application, update.effective_user.id)
     if getattr(context, "user_data", None) is not None:
         context.user_data.pop("pending_command_args", None)
     await update.message.reply_text(
-        "✅ <b>注册完成</b>。\n" + _access_text(status) +
-        ("\n\n" + (ADMIN_QUICK if status == "admin" else QUICK)
-         if status != "subscription_required" else ""),
+        "✅ <b>注册完成</b>。\n" + _welcome_text(status, strategies),
         parse_mode=ParseMode.HTML,
         reply_markup=ReplyKeyboardRemove(),
     )
@@ -311,7 +365,10 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("请先使用 /start 验证本人的 Telegram 手机号。")
         return
     if status != "subscription_required":
-        await update.message.reply_text(_access_text(status))
+        with transaction(context.application.bot_data["session_factory"]) as session:
+            user = accounts.by_telegram(session, update.effective_user.id)
+            strategies = _enabled_strategies(session, user.id) if user else set()
+        await update.message.reply_text(_welcome_text(status, strategies), parse_mode=ParseMode.HTML)
         return
     link = await context.bot.create_invoice_link(
         title="Premium 订阅（30 天）",
@@ -365,8 +422,11 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         created = accounts.record_subscription_payment(
             session, telegram_id, payment.telegram_payment_charge_id, payment.total_amount, expiry)
     if created:
-        await _refresh_user_menu(context.application, telegram_id, "paid")
-        await update.message.reply_text("✅ 付费 Premium 已激活。\n\n" + QUICK, parse_mode=ParseMode.HTML)
+        await _refresh_user_menu(context.application, telegram_id)
+        with transaction(context.application.bot_data["session_factory"]) as session:
+            user = accounts.by_telegram(session, telegram_id)
+            strategies = _enabled_strategies(session, user.id) if user else set()
+        await update.message.reply_text("✅ " + _welcome_text("paid", strategies), parse_mode=ParseMode.HTML)
 
 
 def _whitelist_phone(args: list[str]) -> str:
@@ -750,7 +810,7 @@ async def unbind_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         del waiters[key]
     if done:
         log.info("a user unbound and their data was deleted")
-        await _refresh_user_menu(context.application, update.effective_user.id, "unregistered")
+        await _refresh_user_menu(context.application, update.effective_user.id)
     await query.edit_message_text("已解绑，你的全部数据已删除。需要时发 /start 重新绑定。" if done else "你还没有绑定。发 /start 开始绑定。")
 
 
@@ -758,18 +818,23 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     accounts, _ = _services(context)
     with transaction(context.application.bot_data["session_factory"]) as session:
         status = accounts.access_status(session, update.effective_user.id)
+        user = accounts.by_telegram(session, update.effective_user.id)
+        enabled_strategy1 = bool(user and session.get(UserStrategy, (user.id, "strategy1")))
     text = (QUICK_NEW if status == "unregistered" and not context.args else
             QUICK_PENDING if status == "subscription_required" and not context.args else
+            STRATEGY_PICK if status in {"admin", "whitelist", "paid"} and not enabled_strategy1 and not context.args else
             ADMIN_QUICK if status == "admin" and not context.args else
             help_for(context.args[0] if context.args else None, True))
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
-def _require(session, update, context):
+def _require(session, update, context, *, allow_unselected: bool = False):
     accounts = context.application.bot_data["accounts"]
     user = accounts.require(session, update.effective_user.id)
     if context.application.bot_data.get("enforce_premium") and not accounts.has_premium_access(session, update.effective_user.id):
         raise PermissionError("Premium access required")
+    if not allow_unselected and session.get(UserStrategy, (user.id, "strategy1")) is None:
+        raise PermissionError("Strategy selection required")
     return user
 
 
@@ -886,7 +951,7 @@ async def edit_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.message.reply_text(str(exc))
         return ConversationHandler.END
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("确认", callback_data="edit:yes"), InlineKeyboardButton("取消", callback_data="edit:no")]]))
-    return REMOVE_CONFIRM
+    return EDIT_CONFIRM
 
 
 async def edit_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1039,6 +1104,55 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(("🕘 <b>最近的账户操作</b>\n<pre>" + html.escape(body) + "</pre>") if body else "暂无记录。", parse_mode=ParseMode.HTML)
 
 
+async def strategy_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if context.args:
+        await update.message.reply_text("请直接发送 /strategy1 选择策略 1；策略 2 仍在研发中。")
+        return
+    with transaction(context.application.bot_data["session_factory"]) as session:
+        user = _require(session, update, context, allow_unselected=True)
+        enabled = _enabled_strategies(session, user.id)
+    current = "、".join(["策略 1：加强型 QQQ"] if "strategy1" in enabled else []) or "尚未启用可用策略"
+    await update.message.reply_text(
+        f"📊 已启用：{current}\n\n"
+        "发送 /strategy1 启用策略 1（加强型 QQQ），/strategy1_off 停用。\n"
+        "可以同时启用多个策略；目前只有策略 1 开放。策略 2 正在研发中，暂不可选；发送 /strategy2 可查看状态。"
+    )
+
+
+async def strategy_one(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if context.args:
+        await update.message.reply_text("/strategy1 不需要参数，请单独发送。")
+        return
+    with transaction(context.application.bot_data["session_factory"]) as session:
+        user = _require(session, update, context, allow_unselected=True)
+        if session.get(UserStrategy, (user.id, "strategy1")) is None:
+            session.add(UserStrategy(user_id=user.id, strategy_id="strategy1"))
+    await _refresh_user_menu(context.application, update.effective_user.id)
+    await update.message.reply_text("✅ 已启用策略 1。\n\n" + STRATEGY1_WELCOME, parse_mode=ParseMode.HTML)
+
+
+async def strategy_one_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if context.args:
+        await update.message.reply_text("/strategy1_off 不需要参数，请单独发送。")
+        return
+    with transaction(context.application.bot_data["session_factory"]) as session:
+        user = _require(session, update, context, allow_unselected=True)
+        selection = session.get(UserStrategy, (user.id, "strategy1"))
+        if selection is not None:
+            session.delete(selection)
+    await _refresh_user_menu(context.application, update.effective_user.id)
+    await update.message.reply_text("策略 1 已停用，不会再向你推送策略 1 的通知。\n\n" + STRATEGY_PICK)
+
+
+async def strategy_two(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if context.args:
+        await update.message.reply_text("/strategy2 不需要参数，请单独发送。")
+        return
+    with transaction(context.application.bot_data["session_factory"]) as session:
+        _require(session, update, context, allow_unselected=True)
+    await update.message.reply_text("策略 2 正在研发中，暂不可选。你当前的策略没有改变。")
+
+
 async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Today's scores and suggestions for the CALLER only (own portfolio, own D scores). If the shared data is older than 12 hours it is shown with a notice while a refresh runs in the
     background; the caller then gets the fresh result automatically. Suggestions only: nothing is ordered."""
@@ -1092,10 +1206,13 @@ async def _check_refresh_job(application) -> None:
         application.bot_data["check_waiters"] = {}
         for user_id, telegram_id in waiters.items():
             try:
-                if application.bot_data.get("enforce_premium"):
-                    with transaction(factory) as session:
-                        if not application.bot_data["accounts"].has_premium_access(session, telegram_id):
-                            continue
+                with transaction(factory) as session:
+                    user = application.bot_data["accounts"].by_telegram(session, telegram_id)
+                    if (user is None or user.id != user_id or
+                            session.get(UserStrategy, (user.id, "strategy1")) is None or
+                            application.bot_data.get("enforce_premium") and
+                            not application.bot_data["accounts"].has_premium_access(session, telegram_id)):
+                        continue
                 if failure:
                     text = failure + "\n稍后可以再用 /check。"
                 else:
@@ -1207,6 +1324,7 @@ async def chat_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def chat_reply_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
+    context.user_data.pop("pending_command_args", None)
     context.user_data.pop("chat_reply_id", None)
     context.user_data.pop("chat_reply_callback", None)
     match = re.fullmatch(r"chat-reply:(\d+):(\d{20})", query.data or "")
@@ -1610,17 +1728,35 @@ def configure_application(application: Application, accounts: AccountService, fa
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _staged_command_dispatch), group=-1)
     cancel_handler = CommandHandler("cancel", cancel)
     application.add_handler(CommandHandler(list(_STAGED_HANDLERS), _staged_command_entry))
-    application.add_handler(ConversationHandler([CommandHandler("start", start)], {CONTACT: [MessageHandler(filters.CONTACT, contact), MessageHandler(filters.ALL & ~filters.COMMAND, contact_reminder)]}, fallbacks=[cancel_handler], allow_reentry=True))
+    # One conversation per user: starting another input flow replaces the old
+    # state, and /cancel ends the entire active flow rather than just one of many.
+    text_input = filters.TEXT & ~filters.COMMAND
+    application.add_handler(ConversationHandler(
+        entry_points=[
+            CommandHandler("start", start), CommandHandler("add", add_start),
+            CommandHandler("edit", edit_start), CommandHandler("remove", remove_start),
+            CommandHandler("cash", cash_start),
+            CommandHandler(["announce", "important_announce"], announce_start),
+            CommandHandler("chat", chat_start),
+            CallbackQueryHandler(chat_reply_start, pattern=r"^chat-reply:"),
+        ],
+        states={
+            CONTACT: [MessageHandler(filters.CONTACT, contact), MessageHandler(filters.ALL & ~filters.COMMAND, contact_reminder)],
+            ADD_DATA: [MessageHandler(text_input, add_data)],
+            EDIT_DATA: [MessageHandler(text_input, edit_data)],
+            EDIT_CONFIRM: [CallbackQueryHandler(edit_confirm, pattern=r"^edit:")],
+            REMOVE_DATA: [MessageHandler(text_input, remove_data)],
+            REMOVE_CONFIRM: [CallbackQueryHandler(remove_confirm, pattern=r"^remove:")],
+            CASH_DATA: [MessageHandler(text_input, cash_data)],
+            ANNOUNCE_TEXT: [MessageHandler(text_input, announce_text)],
+            ANNOUNCE_CONFIRM: [CallbackQueryHandler(announce_confirm, pattern=r"^announce:")],
+            CHAT_TEXT: [MessageHandler(text_input, chat_text)],
+            CHAT_REPLY_TEXT: [MessageHandler(text_input, chat_reply_text)],
+        }, fallbacks=[cancel_handler], allow_reentry=True,
+    ))
     # A contact sent from an older /start keyboard must still work after a restart
     # or a lost conversation state. Once bound, contact() rejects stale prompts.
     application.add_handler(MessageHandler(filters.CONTACT, contact))
-    application.add_handler(ConversationHandler([CommandHandler("add", add_start)], {ADD_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_data)]}, fallbacks=[cancel_handler]))
-    application.add_handler(ConversationHandler([CommandHandler("edit", edit_start)], {EDIT_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_data)], REMOVE_CONFIRM: [CallbackQueryHandler(edit_confirm, pattern=r"^edit:")]}, fallbacks=[cancel_handler]))
-    application.add_handler(ConversationHandler([CommandHandler("remove", remove_start)], {REMOVE_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_data)], REMOVE_CONFIRM: [CallbackQueryHandler(remove_confirm, pattern=r"^remove:")]}, fallbacks=[cancel_handler]))
-    application.add_handler(ConversationHandler([CommandHandler("cash", cash_start)], {CASH_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, cash_data)]}, fallbacks=[cancel_handler]))
-    application.add_handler(ConversationHandler([CommandHandler(["announce", "important_announce"], announce_start)], {ANNOUNCE_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, announce_text)], ANNOUNCE_CONFIRM: [CallbackQueryHandler(announce_confirm, pattern=r"^announce:")]}, fallbacks=[cancel_handler]))
-    application.add_handler(ConversationHandler([CommandHandler("chat", chat_start)], {CHAT_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, chat_text)]}, fallbacks=[cancel_handler], allow_reentry=True))
-    application.add_handler(ConversationHandler([CallbackQueryHandler(chat_reply_start, pattern=r"^chat-reply:")], {CHAT_REPLY_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, chat_reply_text)]}, fallbacks=[cancel_handler]))
     application.add_handler(CommandHandler("cancel", cancel))
     for command, handler in [("help", help_command), ("privacy", privacy), ("subscribe", subscribe),
                              ("admin_help", admin_help), ("admin_list", admin_list), ("admin_show", admin_show),
@@ -1628,6 +1764,8 @@ def configure_application(application: Application, accounts: AccountService, fa
                              ("whitelist_add", whitelist_add), ("whitelist_list", whitelist_list),
                              ("whitelist_show", whitelist_show), ("whitelist_edit", whitelist_edit),
                              ("whitelist_remove", whitelist_remove),
+                             ("strategy", strategy_command), ("strategy1", strategy_one),
+                             ("strategy1_off", strategy_one_off), ("strategy2", strategy_two),
                              ("portfolio", portfolio), ("import", import_start), ("export", export_command), ("history", history), ("check", check), ("signals", signals), ("cooldown", cooldown), ("unbind", unbind_start), ("help_import", help_import), ("help_faq", help_faq), ("settings", settings), ("users", users_command), ("stats", stats_command), ("health", health), ("runstrategy", run_strategy)]:
         if command not in _STAGED_HANDLERS:
             application.add_handler(CommandHandler(command, handler))

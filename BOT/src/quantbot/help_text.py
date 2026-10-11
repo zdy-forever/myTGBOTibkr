@@ -28,6 +28,23 @@ QUICK_PENDING = """✅ 手机号已验证，但尚未开通 Premium。
 /unbind　解绑并删除账户数据
 /cancel　取消当前操作"""
 
+STRATEGY_PICK = """✅ Premium 已开通。使用策略功能前，请先启用至少一个可用策略：
+
+/strategy1　策略 1：加强型 QQQ（当前开放）
+/strategy1_off　停用策略 1
+/strategy2　策略 2：研发中，暂不可选
+/strategy　查看已启用的策略
+
+可以同时启用多个策略；目前只有策略 1 开放。启用策略 1 后，才能使用它的 /check、/auto_notice_date 等功能。"""
+
+STRATEGY1_WELCOME = """📈 <b>策略 1：加强型 QQQ</b>
+
+已为你启用策略 1。先用 /add 或 /import 录入持仓，再用 /cash 设置可投入现金；发送 /check 查看与你的持仓对应的建议。
+
+/auto_notice_date 设置每月提醒交易日；/settings 控制通知开关；/strategy 可查看已启用的策略，/strategy1_off 可停用本策略。
+
+⚠️ <i>仅供参考，不构成投资建议；机器人不会自动下单。</i>"""
+
 QUICK = f"""📘 <b>快速上手</b>
 
 1️⃣ <b>录入你的持仓和现金</b>
@@ -36,6 +53,7 @@ QUICK = f"""📘 <b>快速上手</b>
 
 2️⃣ <b>随时查看建议</b>
 /check 今天的打分，和按你的持仓给出的买卖建议
+/strategy 查看和选择策略（目前开放策略 1：加强型 QQQ）
 
 3️⃣ <b>每月自动推送</b>
 默认每月美股第一个交易日开盘前（北京时间白天）发给你。用 /auto_notice_date 修改你自己的通知日期。建议按你当时的持仓和现金单独计算，每个人收到的不一样。
@@ -47,6 +65,7 @@ QUICK = f"""📘 <b>快速上手</b>
 需要参数的命令可先单独发送，再在下一条消息输入参数；输入有误会提示重试，/cancel 可取消。
 
 📊 <b>查看</b>（直接发送，不需要参数）
+/strategy　查看已启用策略；/strategy1 启用加强型 QQQ；/strategy1_off 停用；/strategy2 暂处研发中
 /check　今天的排名和你的买卖建议
 /cooldown　暂不建议买入/卖出的股票
 /portfolio　我的持仓和现金；较多时用按钮翻页，或发 <code>/portfolio 2</code> 查看第 2 页

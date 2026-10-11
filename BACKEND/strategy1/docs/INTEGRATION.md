@@ -1,4 +1,4 @@
-# Integrating the strategy module into the multi-user bot (Phase 2)
+# Integrating strategy1 (加强型 QQQ) into the multi-user bot
 
 The module is a **library**. It has no Telegram, no database and no scheduler, and it starts no process: the host bot (single process, long polling) imports it.
 It never places an order; every output is a suggestion with a disclaimer.
@@ -70,7 +70,7 @@ Run it in the same process; no second bot process is needed. Only the pool refre
 
 ## `blocked`
 
-Names a user sold recently are not bought back for 180 days. The host knows this from its `transactions` table: pass `{symbol: datetime_until_blocked}`; omit it if not needed.
+Names a user sold recently are temporarily excluded from buys. The host knows this from its `transactions` table: pass `{symbol: datetime_until_blocked}`; omit it if not needed. Do not expose the cooldown duration in user-facing text.
 
 ## Limits worth knowing
 

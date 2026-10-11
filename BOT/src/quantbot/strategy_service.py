@@ -33,12 +33,14 @@ from .models import (
     TransactionType,
     User,
     UserSignal,
+    UserStrategy,
 )
 from .strategy_text import DISCLAIMER_HTML, public_recommendation, render_check, signal_line
 
 log = logging.getLogger(__name__)
 NY = ZoneInfo("America/New_York")
 MAX_ATTEMPTS = 5
+STRATEGY_ID = "strategy1"
 US_EXCHANGES = frozenset({"US", "NASDAQ", "NYSE", "AMEX", "ARCA", "NYSEARCA", "BATS"})
 REFERENCE_NOTE = ("共享参考行：本次策略运行中该股票的 P/V/F 原始分（P 为原始值，越低越好）。"
                   "买卖建议按每位用户自己的持仓单独计算，见 user_signals。")
@@ -52,7 +54,7 @@ def load_library():
     try:
         import quant_strategy
     except ImportError as exc:                                       # pragma: no cover - depends on the deployment
-        raise StrategyUnavailable("quant_strategy 未安装：先执行 pip install -e ../BACKEND") from exc
+        raise StrategyUnavailable("quant_strategy 未安装：先执行 pip install -e ../BACKEND/strategy1") from exc
     return quant_strategy
 
 
@@ -76,8 +78,9 @@ def build_engine(settings):
 def held_symbols(session: Session) -> set[str]:
     """Only ticker symbols (no owners, no quantities): the engine needs prices for names outside the ETF pool."""
     return set(session.scalars(
-        select(Position.symbol).join(User).where(
-            User.is_active, Position.currency == "USD", Position.exchange.in_(US_EXCHANGES))))
+        select(Position.symbol).join(User).join(UserStrategy, UserStrategy.user_id == User.id).where(
+            User.is_active, UserStrategy.strategy_id == STRATEGY_ID,
+            Position.currency == "USD", Position.exchange.in_(US_EXCHANGES))))
 
 
 def portfolio_of(session: Session, user_id: str):
@@ -215,7 +218,10 @@ def generate_for_all_users(factory, row_id: int, settings, *, user_ids=None, not
     with transaction(factory) as session:
         row = session.get(StrategyRun, row_id)
         run = result_of(row)
-        query = select(User.id).join(NotificationPreference).where(User.is_active, NotificationPreference.signals_enabled)
+        query = (select(User.id).join(NotificationPreference)
+                 .join(UserStrategy, UserStrategy.user_id == User.id)
+                 .where(User.is_active, UserStrategy.strategy_id == STRATEGY_ID,
+                        NotificationPreference.signals_enabled))
         if user_ids is not None:
             query = query.where(User.id.in_(user_ids))
         user_ids = [uid for uid in session.scalars(query)
@@ -226,7 +232,8 @@ def generate_for_all_users(factory, row_id: int, settings, *, user_ids=None, not
             with transaction(factory) as session:
                 prefs = session.get(NotificationPreference, user_id)
                 user = session.get(User, user_id)
-                if not user or not user.is_active or not prefs or not prefs.signals_enabled:
+                if (not user or not user.is_active or session.get(UserStrategy, (user.id, STRATEGY_ID)) is None
+                        or not prefs or not prefs.signals_enabled):
                     continue
                 if accounts is not None and not accounts.has_premium_access(session, user.telegram_id):
                     continue
@@ -281,7 +288,10 @@ async def _deliver_pending(application) -> tuple[int, int]:
     with transaction(factory) as session:
         rows = session.execute(
             select(UserSignal, User.telegram_id).join(User, User.id == UserSignal.user_id).join(NotificationPreference, NotificationPreference.user_id == User.id)
-            .where(UserSignal.notified_at.is_(None), UserSignal.notification_attempts < MAX_ATTEMPTS, User.is_active, NotificationPreference.signals_enabled)
+            .join(UserStrategy, UserStrategy.user_id == User.id)
+            .where(UserSignal.notified_at.is_(None), UserSignal.notification_attempts < MAX_ATTEMPTS,
+                   User.is_active, UserStrategy.strategy_id == STRATEGY_ID,
+                   UserSignal.created_at >= UserStrategy.enabled_at, NotificationPreference.signals_enabled)
             .order_by(UserSignal.user_id, UserSignal.action.desc(), UserSignal.id)).all()
         batches: dict[str, tuple[int, list[tuple[int, str]]]] = {}
         for us, telegram_id in rows:
@@ -289,16 +299,39 @@ async def _deliver_pending(application) -> tuple[int, int]:
                 continue
             batches.setdefault(us.user_id, (telegram_id, []))[1].append((us.id, public_recommendation(us.recommendation)))
     sent = failed = 0
-    for telegram_id, items in batches.values():
-        text = ("📈 <b>本月策略建议</b>\n\n" + "\n\n".join(esc(t) for _, t in items) + "\n\n" + DISCLAIMER_HTML + "\n\n<i>用 /check 可按你当前的持仓重新查看。</i>")
+    for user_id, (telegram_id, items) in batches.items():
         error = None
+        delivered = False
         try:
             while True:
+                # Recheck after every rate-limit wait, including premium and
+                # notification preferences, against the original account UUID.
+                with transaction(factory) as session:
+                    user = session.get(User, user_id)
+                    selection = session.get(UserStrategy, (user_id, STRATEGY_ID))
+                    prefs = session.get(NotificationPreference, user_id)
+                    if (user is None or not user.is_active or user.telegram_id != telegram_id or
+                            selection is None or prefs is None or not prefs.signals_enabled or
+                            application.bot_data.get("enforce_premium") and
+                            not application.bot_data["accounts"].has_premium_access(session, telegram_id)):
+                        break
+                    eligible = set(session.scalars(select(UserSignal.id).where(
+                        UserSignal.user_id == user_id, UserSignal.id.in_([item_id for item_id, _ in items]),
+                        UserSignal.created_at >= selection.enabled_at,
+                        UserSignal.notified_at.is_(None), UserSignal.notification_attempts < MAX_ATTEMPTS)))
+                    items = [(item_id, body) for item_id, body in items if item_id in eligible]
+                if not items:
+                    break
+                text = ("📈 <b>本月策略建议</b>\n\n" + "\n\n".join(esc(t) for _, t in items) + "\n\n" + DISCLAIMER_HTML + "\n\n<i>用 /check 可按你当前的持仓重新查看。</i>")
                 try:
                     await application.bot.send_message(telegram_id, text, parse_mode=ParseMode.HTML)
+                    delivered = True
                     break
                 except RetryAfter as exc:
-                    await asyncio.sleep(float(exc.retry_after) + 0.2)
+                    delay = exc.retry_after.total_seconds() if isinstance(exc.retry_after, timedelta) else float(exc.retry_after)
+                    await asyncio.sleep(delay + 0.2)
+            if not delivered:
+                continue
             sent += 1
         except TelegramError as exc:
             error = f"{type(exc).__name__}: {exc}"[:1000]
@@ -572,8 +605,9 @@ def due_notice_users(session, now: datetime, day: int, tz: str, accounts=None,
     local = now.astimezone(ZoneInfo(tz))
     month = local.strftime("%Y-%m")
     result = []
-    for prefs in session.scalars(select(NotificationPreference).join(User).where(
-            User.is_active, NotificationPreference.signals_enabled)):
+    for prefs in session.scalars(select(NotificationPreference).join(User)
+            .join(UserStrategy, UserStrategy.user_id == User.id).where(
+            User.is_active, UserStrategy.strategy_id == STRATEGY_ID, NotificationPreference.signals_enabled)):
         if prefs.auto_notice_day == 0:
             target = (random_notice_date(calendar_days, prefs.user_id, accounts.protector,
                                          prefs.random_notice_started_on)

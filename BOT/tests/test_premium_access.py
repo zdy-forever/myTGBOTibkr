@@ -8,7 +8,7 @@ from telegram.ext import Application, ApplicationHandlerStop, ConversationHandle
 
 from quantbot import bot
 from quantbot.db import transaction
-from quantbot.models import CashAccount, Position, Transaction
+from quantbot.models import CashAccount, Position, Transaction, UserStrategy
 
 
 class Message:
@@ -91,6 +91,31 @@ async def test_pinned_service_message_does_not_trigger_registration_reply(factor
     assert not bot_origin.replies
 
 
+async def test_admin_reply_callback_on_bot_message_passes_authorization_gate(factory, accounts):
+    with transaction(factory) as session:
+        admin = accounts.register(session, 999, "+61400000999").user
+        session.add(UserStrategy(user_id=admin.id, strategy_id="strategy1"))
+    bot_message = Message(text="💬 用户留言", user_id=999)
+    bot_message.from_user.is_bot = True
+    callback = SimpleNamespace(data="chat-reply:1:20261011123456789012")
+    update = make_update(user_id=999, callback=callback)
+    update.effective_message = bot_message
+    await bot.authorization_gate(update, context(factory, accounts))
+
+    # The same bot-authored notification must not bypass the registration gate
+    # when an unverified account presses its button.
+    update.effective_user.id = 101
+    callback.answers = []
+
+    async def answer(text, **kwargs):
+        callback.answers.append(text)
+
+    callback.answer = answer
+    with pytest.raises(ApplicationHandlerStop):
+        await bot.authorization_gate(update, context(factory, accounts))
+    assert "验证手机号" in callback.answers[0]
+
+
 async def test_unregistered_user_can_send_help_topic_as_followup(factory, accounts):
     ctx = context(factory, accounts)
     ctx.user_data = {}
@@ -110,6 +135,7 @@ async def test_whitelist_immediately_activates_and_keeps_existing_data(factory, 
     phone = Message(contact=SimpleNamespace(user_id=101, phone_number="+61400000001"))
     await bot.contact(make_update(phone), ctx)
     assert "白名单 Premium 已激活" in phone.replies[0][0]
+    assert "/strategy1" in phone.replies[0][0]
     with transaction(factory) as session:
         user = accounts.by_telegram(session, 101)
         session.get(CashAccount, user.id).balance = Decimal(500)
@@ -119,6 +145,7 @@ async def test_whitelist_immediately_activates_and_keeps_existing_data(factory, 
     start = Message(text="/start")
     assert await bot.start(make_update(start), ctx) == ConversationHandler.END
     assert "白名单 Premium 已激活" in start.replies[0][0]
+    assert "/strategy1" in start.replies[0][0]
     with transaction(factory) as session:
         user = accounts.by_telegram(session, 101)
         assert user.id == user_id
@@ -176,6 +203,78 @@ async def test_gate_blocks_commands_callbacks_and_payments_before_verification(f
     with pytest.raises(ApplicationHandlerStop):
         await bot.authorization_gate(make_update(callback=callback), ctx)
     assert "Premium" in callback.answers[0]
+
+
+async def test_strategy_selection_is_per_premium_user_and_strategy_two_stays_unavailable(factory, accounts):
+    with transaction(factory) as session:
+        accounts.register(session, 999, "+61400000999")
+        first = accounts.register(session, 101, "+61400000001").user
+        second = accounts.register(session, 102, "+61400000002").user
+        accounts.whitelist_add(session, 999, "+61 400 000 001")
+        first_id, second_id = first.id, second.id
+        session.add(UserStrategy(user_id=first_id, strategy_id="strategy_future"))
+
+    ctx = context(factory, accounts)
+    for command in ("/strategy", "/strategy1", "/strategy2"):
+        message = Message(text=command, user_id=102)
+        with pytest.raises(ApplicationHandlerStop):
+            await bot.authorization_gate(make_update(message, user_id=102), ctx)
+        assert "/subscribe" in message.replies[0][0]
+
+    menu_message = Message(text="/strategy")
+    await bot.authorization_gate(make_update(menu_message), ctx)
+    await bot.strategy_command(make_update(menu_message), ctx)
+    assert "/strategy1" in menu_message.replies[0][0]
+    assert "加强型 QQQ" in menu_message.replies[0][0]
+    assert "研发中" in menu_message.replies[0][0]
+
+    select_message = Message(text="/strategy1")
+    await bot.strategy_one(make_update(select_message), ctx)
+    unavailable_message = Message(text="/strategy2")
+    await bot.strategy_two(make_update(unavailable_message), ctx)
+    assert "研发中" in unavailable_message.replies[0][0]
+    with transaction(factory) as session:
+        assert session.get(UserStrategy, (first_id, "strategy1")) is not None
+        assert session.get(UserStrategy, (first_id, "strategy_future")) is not None
+        assert session.get(UserStrategy, (second_id, "strategy1")) is None
+    off_message = Message(text="/strategy1_off")
+    await bot.strategy_one_off(make_update(off_message), ctx)
+    with transaction(factory) as session:
+        assert session.get(UserStrategy, (first_id, "strategy1")) is None
+        assert session.get(UserStrategy, (first_id, "strategy_future")) is not None
+    blocked_check = Message(text="/check")
+    with pytest.raises(ApplicationHandlerStop):
+        await bot.authorization_gate(make_update(blocked_check), ctx)
+    assert "/strategy1" in blocked_check.replies[0][0]
+    assert "strategy" in [item.command for item in bot._menu_for("whitelist")]
+    assert "strategy" not in [item.command for item in bot._menu_for("subscription_required")]
+
+
+async def test_premium_start_requires_strategy_then_shows_strategy_one_welcome(factory, accounts):
+    with transaction(factory) as session:
+        accounts.register(session, 999, "+61400000999")
+        user = accounts.register(session, 101, "+61400000001").user
+        accounts.whitelist_add(session, 999, "+61 400 000 001")
+        user_id = user.id
+    ctx = context(factory, accounts)
+    start_message = Message(text="/start")
+    await bot.start(make_update(start_message), ctx)
+    assert "Premium 已开通" in start_message.replies[0][0]
+    assert "/strategy1" in start_message.replies[0][0]
+    assert "先用 /add 或 /import" not in start_message.replies[0][0]
+    for command in ("/check", "/auto_notice_date", "/portfolio"):
+        blocked = Message(text=command)
+        with pytest.raises(ApplicationHandlerStop):
+            await bot.authorization_gate(make_update(blocked), ctx)
+        assert "先启用" in blocked.replies[0][0]
+    with transaction(factory) as session:
+        assert session.get(UserStrategy, (user_id, "strategy1")) is None
+    await bot.strategy_one(make_update(Message(text="/strategy1")), ctx)
+    selected_start = Message(text="/start")
+    await bot.start(make_update(selected_start), ctx)
+    assert "策略 1：加强型 QQQ" in selected_start.replies[0][0]
+    assert "先用 /add 或 /import" in selected_start.replies[0][0]
+    await bot.authorization_gate(make_update(Message(text="/check")), ctx)
 
 
 async def test_premium_and_admin_commands_stay_private(factory, accounts):
@@ -265,6 +364,7 @@ async def test_payment_only_grants_registered_user_and_expires(factory, accounts
     paid = Message(payment=payment)
     await bot.successful_payment(make_update(paid), ctx)
     assert "付费 Premium 已激活" in paid.replies[0][0]
+    assert "/strategy1" in paid.replies[0][0]
     await bot.successful_payment(make_update(Message(payment=payment)), ctx)
     with transaction(factory) as session:
         assert accounts.has_premium_access(session, 101)
@@ -341,6 +441,7 @@ def test_gate_is_first_and_monthly_jobs_skip_nonpremium(factory, accounts):
         premium = accounts.register(session, 101, "+61400000001").user
         unpaid = accounts.register(session, 102, "+61400000002").user
         accounts.whitelist_add(session, 999, "+61 400 000 001")
+        session.add(UserStrategy(user_id=premium.id, strategy_id="strategy1"))
         session.flush()
         due = strategy_service.due_notice_users(session, datetime(2026, 10, 12, 2, tzinfo=UTC),
                                                 1, "Asia/Shanghai", accounts)
@@ -377,4 +478,5 @@ def test_premium_migration_keeps_legacy_portfolio_and_history(tmp_path, monkeypa
         assert conn.execute(text("SELECT balance FROM cash_accounts WHERE user_id='old'")).scalar() == 123.45
         assert conn.execute(text("SELECT shares FROM positions WHERE user_id='old'")).scalar() == 2
         assert conn.execute(text("SELECT count(*) FROM transactions WHERE user_id='old'")).scalar() == 1
+        assert conn.execute(text("SELECT strategy_id FROM user_strategies WHERE user_id='old'")).scalar() == "strategy1"
     engine.dispose()
