@@ -248,12 +248,23 @@ class AccountService:
     def has_premium_access(self, session: Session, telegram_user_id: int, *, now: datetime | None = None) -> bool:
         return self.access_status(session, telegram_user_id, now=now) in {"admin", "whitelist", "paid"}
 
-    def whitelist_add(self, session: Session, telegram_user_id: int, phone: str) -> bool:
+    def whitelist_add(self, session: Session, telegram_user_id: int, phone: str,
+                      label: str | None = None) -> bool:
         self.require_maintainer(session, telegram_user_id)
         fingerprint = self.protector.fingerprint(phone)
         if session.get(PhoneWhitelist, fingerprint):
             return False
-        session.add(PhoneWhitelist(phone_fingerprint=fingerprint, created_by_telegram_id=telegram_user_id))
+        session.add(PhoneWhitelist(phone_fingerprint=fingerprint, label=label,
+                                   created_by_telegram_id=telegram_user_id))
+        return True
+
+    def whitelist_edit(self, session: Session, telegram_user_id: int, phone: str,
+                       label: str | None) -> bool:
+        self.require_maintainer(session, telegram_user_id)
+        grant = session.get(PhoneWhitelist, self.protector.fingerprint(phone))
+        if grant is None:
+            return False
+        grant.label = label
         return True
 
     def whitelist_remove(self, session: Session, telegram_user_id: int, phone: str) -> bool:

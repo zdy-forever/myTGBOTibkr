@@ -124,6 +124,53 @@ async def test_command_rejects_unregistered_user_and_saves_if_calendar_unavailab
         assert session.get(NotificationPreference, uid).auto_notice_day == 5
 
 
+async def test_random_mode_persists_and_only_uses_remaining_trading_days(factory, accounts, monkeypatch):
+    uid = add_user(factory, 1)
+    monkeypatch.setattr(svc, "strategy_settings", lambda: SETTINGS)
+    monkeypatch.setattr(svc, "_calendar_dates", lambda settings, first, last, calendar=None:
+                        [date.fromisoformat(item["date"]) for item in weekdays(first, last)])
+    update, context, _message = handler_args(factory, accounts, 1)
+    context.args = ["random"]
+    await bot.auto_notice_date(update, context)
+    with factory.begin() as session:
+        prefs = session.get(NotificationPreference, uid)
+        assert prefs.auto_notice_day == 0
+        started = prefs.random_notice_started_on
+        assert started is not None
+    context.args = ["随机"]
+    await bot.auto_notice_date(update, context)
+    with factory.begin() as session:
+        assert session.get(NotificationPreference, uid).random_notice_started_on == started
+    days = [date(2026, 10, 9), date(2026, 10, 12), date(2026, 10, 13)]
+    chosen = svc.random_notice_date(days, uid, accounts.protector, date(2026, 10, 12))
+    assert chosen in days[1:]
+    assert chosen == svc.random_notice_date(days, uid, accounts.protector, date(2026, 10, 12))
+    assert svc.random_notice_date(days, uid, accounts.protector, date(2026, 10, 14)) is None
+    context.args = ["5"]
+    monkeypatch.setattr(svc, "notice_date_preview", lambda *args: "日期预览")
+    await bot.auto_notice_date(update, context)
+    with factory.begin() as session:
+        prefs = session.get(NotificationPreference, uid)
+        assert prefs.auto_notice_day == 5 and prefs.random_notice_started_on is None
+
+
+def test_random_scheduler_selects_exactly_one_remaining_session(factory, accounts):
+    uid = add_user(factory, 1)
+    days = [date(2026, 11, 2), date(2026, 11, 3), date(2026, 11, 4)]
+    with factory.begin() as session:
+        prefs = session.get(NotificationPreference, uid)
+        prefs.auto_notice_day = 0
+        prefs.random_notice_started_on = days[1]
+    chosen = svc.random_notice_date(days, uid, accounts.protector, days[1])
+    assert chosen in days[1:]
+    for ordinal, day in enumerate(days, 1):
+        with factory.begin() as session:
+            due = svc.due_notice_users(session, datetime(day.year, day.month, day.day, 2, tzinfo=UTC),
+                                       ordinal, "UTC", accounts, calendar_days=days,
+                                       enforce_premium=False)
+            assert due == ([uid] if day == chosen else [])
+
+
 async def test_scheduler_targets_only_due_users_and_survives_restart_and_date_change(factory, accounts, monkeypatch):
     a = add_user(factory, 1, cash="200")
     b = add_user(factory, 2, cash="200")

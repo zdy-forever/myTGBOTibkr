@@ -195,6 +195,73 @@ async def test_admin_phone_commands(factory):
         assert not accounts.is_maintainer(session, 400)
 
 
+async def test_whitelist_pages_notes_and_exact_lookup(factory):
+    from quantbot.models import PhoneWhitelist
+
+    accounts = configured_accounts()
+    with transaction(factory) as session:
+        accounts.register(session, 999, "+61400000999")
+        accounts.register(session, 101, "+61400000001")
+    for last in range(1, 13):
+        args = ["+61", f"4000000{last:02d}", f"客户{last}"]
+        message = Message("/whitelist_add")
+        await bot.whitelist_add(update(message, 999), context(factory, accounts, args))
+        assert "已添加" in message.replies[0][0]
+    with transaction(factory) as session:
+        rows = session.query(PhoneWhitelist).all()
+        assert len(rows) == 12 and rows[0].label
+        assert accounts.has_premium_access(session, 101)
+    first = Message("/whitelist_list")
+    await bot.whitelist_list(update(first, 999), context(factory, accounts))
+    assert "第 1/2 页" in first.replies[0][0] and first.replies[0][0].count("• 指纹") == 10
+    assert "400000001" not in first.replies[0][0]
+    second = Message("/whitelist_list 2")
+    await bot.whitelist_list(update(second, 999), context(factory, accounts, ["2"]))
+    assert "第 2/2 页" in second.replies[0][0] and second.replies[0][0].count("• 指纹") == 2
+    edit = Message("/whitelist_edit")
+    await bot.whitelist_edit(update(edit, 999), context(factory, accounts, ["+61", "400000001", "<VIP>"]))
+    show = Message("/whitelist_show")
+    await bot.whitelist_show(update(show, 999), context(factory, accounts, ["+61", "400000001"]))
+    assert "&lt;VIP&gt;" in show.replies[0][0] and "+61" not in show.replies[0][0]
+    denied = Message("/whitelist_list")
+    await bot.whitelist_list(update(denied, 101), context(factory, accounts))
+    assert "仅已验证的管理员" in denied.replies[0][0]
+
+
+def test_slash_menu_is_scoped_by_registration_and_role():
+    commands = lambda role: {item.command for item in bot._menu_for(role)}
+    assert "portfolio" not in commands("unregistered")
+    assert "subscribe" in commands("subscription_required") and "portfolio" not in commands("subscription_required")
+    assert "auto_notice_date" in commands("paid")
+    assert {"admin_help", "whitelist_list", "whitelist_edit", "important_announce"} <= commands("admin")
+    assert "admin_help" not in commands("paid")
+
+
+async def test_startup_publishes_scoped_slash_menus(factory):
+    from telegram import BotCommandScopeAllPrivateChats, BotCommandScopeChat
+
+    accounts = configured_accounts()
+    with transaction(factory) as session:
+        accounts.register(session, 999, "+61400000999")
+        accounts.register(session, 101, "+61400000001")
+
+    class MenuBot:
+        def __init__(self):
+            self.calls = []
+
+        async def set_my_commands(self, commands, *, scope):
+            self.calls.append((commands, scope))
+
+    menu_bot = MenuBot()
+    app = SimpleNamespace(bot=menu_bot, bot_data={"session_factory": factory, "accounts": accounts})
+    await bot.initialize_command_menus(app)
+    assert isinstance(menu_bot.calls[0][1], BotCommandScopeAllPrivateChats)
+    scoped = {scope.chat_id: {command.command for command in commands}
+              for commands, scope in menu_bot.calls[1:] if isinstance(scope, BotCommandScopeChat)}
+    assert "admin_help" in scoped[999]
+    assert "admin_help" not in scoped[101] and "subscribe" in scoped[101]
+
+
 def test_bot_will_not_start_without_explicit_owner():
     from quantbot.main import build_application
 

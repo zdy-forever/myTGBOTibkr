@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 from telegram.ext import Application
 
-from .bot import configure_application
+from .bot import configure_application, initialize_command_menus
 from .config import Settings
 from .db import create_db_engine, session_factory, transaction
 from .security import PhoneProtector
@@ -47,7 +47,7 @@ def build_application(settings: Settings) -> Application:
     )
     with transaction(factory) as session:
         accounts.bootstrap_admins(session)
-    application = Application.builder().token(settings.telegram_bot_token).build()
+    application = Application.builder().token(settings.telegram_bot_token).post_init(initialize_command_menus).build()
     configure_application(application, accounts, factory)
     application.bot_data["strategy_autorun"] = settings.strategy_autorun
     application.bot_data["strategy_push"] = (settings.strategy_push_timezone, settings.strategy_push_hour)

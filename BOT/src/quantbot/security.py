@@ -36,6 +36,13 @@ class PhoneProtector:
         normalized = normalize_phone(phone)
         return hmac.new(self._secret, normalized.encode(), hashlib.sha256).hexdigest()
 
+    def random_notice_day(self, user_id: str, month: str, trading_day_count: int) -> int:
+        """A stable, secret-keyed selection for one account and calendar month."""
+        if trading_day_count < 1:
+            raise ValueError("trading_day_count must be positive")
+        digest = hmac.new(self._secret, f"monthly-notice:{user_id}:{month}".encode(), hashlib.sha256).digest()
+        return int.from_bytes(digest, "big") % trading_day_count + 1
+
     def encrypt(self, phone: str) -> str | None:
         if self._fernet is None:
             return None

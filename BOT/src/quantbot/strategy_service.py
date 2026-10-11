@@ -210,7 +210,7 @@ def store_user_signals(session: Session, row: StrategyRun, run, user_id: str, da
 
 
 def generate_for_all_users(factory, row_id: int, settings, *, user_ids=None, notice_month=None, notice_day=None,
-                           accounts=None) -> dict:
+                           accounts=None, calendar_days=None, protector=None) -> dict:
     """One user at a time, each in its own transaction, so a problem with one portfolio never affects another."""
     with transaction(factory) as session:
         row = session.get(StrategyRun, row_id)
@@ -230,8 +230,17 @@ def generate_for_all_users(factory, row_id: int, settings, *, user_ids=None, not
                     continue
                 if accounts is not None and not accounts.has_premium_access(session, user.telegram_id):
                     continue
-                if notice_day is not None and (prefs.auto_notice_day != notice_day or prefs.last_notice_month == notice_month):
-                    continue
+                if notice_day is not None:
+                    if prefs.last_notice_month == notice_month:
+                        continue
+                    if prefs.auto_notice_day == 0:
+                        target = (random_notice_date(calendar_days, user_id, protector,
+                                                     prefs.random_notice_started_on)
+                                  if calendar_days is not None and protector is not None else None)
+                        if target is None or target != calendar_days[notice_day - 1]:
+                            continue
+                    elif prefs.auto_notice_day != notice_day:
+                        continue
                 data = signals_for(session, user_id, run, settings)
                 if data["signals"] and store_user_signals(session, session.get(StrategyRun, row_id), run, user_id, data):
                     stats["with_signals"] += 1
@@ -370,16 +379,19 @@ async def refresh_run(application, *, force: bool = False) -> dict:
         return {"run_id": row_id, "status": status.value, "as_of_bar": run.as_of_bar, "scored": len(run.symbols), "notes": run.notes[-3:], "reused": not created, "settings": settings}
 
 
-async def run_and_notify(application, *, force: bool = False, user_ids=None, notice_month=None, notice_day=None) -> dict:
+async def run_and_notify(application, *, force: bool = False, user_ids=None, notice_month=None,
+                         notice_day=None, calendar_days=None) -> dict:
     lock = application.bot_data.setdefault("strategy_notice_lock", asyncio.Lock())
     if lock.locked():
         raise StrategyUnavailable("已有一次策略推送正在进行。")
     async with lock:
         return await _run_and_notify(application, force=force, user_ids=user_ids,
-                                     notice_month=notice_month, notice_day=notice_day)
+                                     notice_month=notice_month, notice_day=notice_day,
+                                     calendar_days=calendar_days)
 
 
-async def _run_and_notify(application, *, force=False, user_ids=None, notice_month=None, notice_day=None) -> dict:
+async def _run_and_notify(application, *, force=False, user_ids=None, notice_month=None,
+                          notice_day=None, calendar_days=None) -> dict:
     """Monthly push: shared run (a completed run from the last 12 hours is reused), per-user scoring, notifications. Marks the month as done."""
     factory = application.bot_data["session_factory"]
     with transaction(factory) as session:
@@ -394,7 +406,9 @@ async def _run_and_notify(application, *, force=False, user_ids=None, notice_mon
     notice_month = notice_month or datetime.now(ZoneInfo(tz)).strftime("%Y-%m")
     result["generation"] = await asyncio.to_thread(generate_for_all_users, factory, result["run_id"], settings,
                                                    user_ids=user_ids, notice_month=notice_month, notice_day=notice_day,
-                                                   accounts=application.bot_data.get("accounts") if application.bot_data.get("enforce_premium") else None)
+                                                   accounts=application.bot_data.get("accounts") if application.bot_data.get("enforce_premium") else None,
+                                                   calendar_days=calendar_days,
+                                                   protector=getattr(application.bot_data.get("accounts"), "protector", None))
     result["sent"], result["failed"] = await deliver_pending(application)
     with transaction(factory) as session:
         mark_monthly_done(session, result["run_id"])
@@ -434,6 +448,46 @@ def parse_notice_day(value: str) -> int:
         raise ValueError(f"请输入 1–23 的整数。你输入的第 {day} 个交易日在本月、下个月及其他月份都不存在。"
                          "交易日不含周末及休市日，一个月最多只有 23 个工作日；2 月更少。设置未修改。")
     return day
+
+
+def random_notice_date(days: list[date], user_id: str, protector,
+                       started_on: date | None = None) -> date | None:
+    """Choose one real session, considering only remaining days when enabled mid-month."""
+    if not days or protector is None:
+        return None
+    eligible = [day for day in days if started_on is None or day >= started_on]
+    if not eligible:
+        return None
+    month = eligible[0].strftime("%Y-%m")
+    index = protector.random_notice_day(user_id, month, len(eligible)) - 1
+    return eligible[index]
+
+
+def random_notice_preview(settings, today: date, user_id: str, protector,
+                          started_on: date | None, completed=None, calendar=None) -> str:
+    first = today.replace(day=1)
+    year, month0 = divmod(first.year * 12 + first.month, 12)
+    next_month = date(year, month0 + 1, 1)
+    last = next_month.replace(day=month_calendar.monthrange(next_month.year, next_month.month)[1])
+    try:
+        days = _calendar_dates(settings, first, last, calendar)
+    except StrategyUnavailable:
+        return "本月：交易日历暂不可用，尚未确认。\n下个月：交易日历暂不可用，尚未确认。"
+    lines = []
+    for label, month in (("本月", first), ("下个月", next_month)):
+        sessions = [day for day in days if (day.year, day.month) == (month.year, month.month)]
+        target = random_notice_date(sessions, user_id, protector, started_on)
+        if target is None:
+            status = "本月已没有可选交易日。" if sessions else "交易日历缺失，尚未确认。"
+        elif completed == month.strftime("%Y-%m"):
+            status = "已完成通知，不重复发送。"
+        elif target < today:
+            status = f"随机选中 {target:%Y-%m-%d}，已过，不补发。"
+        else:
+            status = f"可生效，随机选中 {target:%Y-%m-%d}。"
+        lines.append(f"{label}（{month:%Y-%m}）：{status}")
+    lines.append("每月只选一个真实交易日；切换到随机模式的当月只从剩余交易日中选。")
+    return "\n".join(lines)
 
 
 def month_trading_days(settings, year: int, month: int, calendar=None) -> list[date]:
@@ -513,13 +567,22 @@ def first_trading_day(settings, year: int, month: int, calendar=None) -> date:
     return month_trading_days(settings, year, month, calendar)[0]
 
 
-def due_notice_users(session, now: datetime, day: int, tz: str, accounts=None) -> list[str]:
+def due_notice_users(session, now: datetime, day: int, tz: str, accounts=None,
+                     calendar_days=None, enforce_premium=True) -> list[str]:
     local = now.astimezone(ZoneInfo(tz))
     month = local.strftime("%Y-%m")
     result = []
     for prefs in session.scalars(select(NotificationPreference).join(User).where(
-            User.is_active, NotificationPreference.signals_enabled, NotificationPreference.auto_notice_day == day)):
-        if accounts is not None and not accounts.has_premium_access(session, session.get(User, prefs.user_id).telegram_id):
+            User.is_active, NotificationPreference.signals_enabled)):
+        if prefs.auto_notice_day == 0:
+            target = (random_notice_date(calendar_days, prefs.user_id, accounts.protector,
+                                         prefs.random_notice_started_on)
+                      if calendar_days is not None and accounts is not None else None)
+            if target != local.date():
+                continue
+        elif prefs.auto_notice_day != day:
+            continue
+        if enforce_premium and accounts is not None and not accounts.has_premium_access(session, session.get(User, prefs.user_id).telegram_id):
             continue
         if prefs.last_notice_month == month:
             continue
@@ -564,8 +627,9 @@ async def _monthly_tick(app, now, local, tz):
             return
         ordinal = days.index(today) + 1
         with transaction(app.bot_data["session_factory"]) as session:
-            user_ids = due_notice_users(session, now, ordinal, tz,
-                                        app.bot_data.get("accounts") if app.bot_data.get("enforce_premium") else None)
+            user_ids = due_notice_users(session, now, ordinal, tz, app.bot_data.get("accounts"),
+                                        calendar_days=days,
+                                        enforce_premium=bool(app.bot_data.get("enforce_premium")))
             for user_id in user_ids:
                 prefs = session.get(NotificationPreference, user_id)
                 prefs.notice_attempts = prefs.notice_attempts + 1 if prefs.notice_attempt_date == today else 1
@@ -573,7 +637,8 @@ async def _monthly_tick(app, now, local, tz):
                 prefs.notice_last_attempt_at = now
         if user_ids:
             log.info("monthly strategy run: %s", await run_and_notify(
-                app, user_ids=user_ids, notice_month=local.strftime("%Y-%m"), notice_day=ordinal))
+                app, user_ids=user_ids, notice_month=local.strftime("%Y-%m"), notice_day=ordinal,
+                calendar_days=days))
     except StrategyUnavailable as exc:
         log.warning("monthly strategy run skipped: %s", exc)
     except Exception:

@@ -11,6 +11,9 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import desc, select
 from telegram import (
+    BotCommand,
+    BotCommandScopeAllPrivateChats,
+    BotCommandScopeChat,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -49,8 +52,10 @@ from .models import (
     AdminGrant,
     AdminPhoneGrant,
     Announcement,
+    AnnouncementDelivery,
     ChatMessage,
     NotificationPreference,
+    PhoneWhitelist,
     PremiumSubscription,
     SubscriptionPayment,
     Transaction,
@@ -70,9 +75,69 @@ def _services(context: ContextTypes.DEFAULT_TYPE):
 
 SUBSCRIPTION_STARS = 400
 SUBSCRIPTION_SECONDS = 30 * 24 * 60 * 60
-SUBSCRIPTION_OFFER = "需要开通订阅：400 Telegram Stars / 30 天（约 US$7.99，实际价格因购买渠道而异）。发送 /subscribe 开通。"
+ADMIN_CONTACT_URL = "https://t.me/ZhenAi_YongHeng"
+SUBSCRIPTION_OFFER = ("需要开通订阅：400 Telegram Stars / 30 天（约 US$7.99，实际价格因购买渠道而异）。"
+                      "发送 /subscribe 开通。联系管理员可以有优惠：" + ADMIN_CONTACT_URL)
 ADMIN_COMMANDS = {"/admin_help", "/admin_list", "/admin_show", "/admin_add", "/admin_edit", "/admin_remove",
-                  "/whitelist_add", "/whitelist_remove", "/announce", "/users", "/stats", "/health", "/runstrategy"}
+                  "/whitelist_add", "/whitelist_list", "/whitelist_show", "/whitelist_edit", "/whitelist_remove",
+                  "/announce", "/important_announce", "/users", "/stats", "/health", "/runstrategy"}
+
+_PUBLIC_MENU = [("start", "开始或查看当前权限"), ("help", "使用说明"),
+                ("privacy", "隐私说明"), ("help_faq", "常见问题")]
+_REGISTERED_MENU = _PUBLIC_MENU + [("subscribe", "查看或开通订阅"),
+                                   ("chat", "给管理员留言"), ("unbind", "解绑账户")]
+_PREMIUM_MENU = _REGISTERED_MENU + [
+    ("check", "查看策略建议"), ("portfolio", "查看我的持仓"),
+    ("add", "添加持仓"), ("edit", "修改持仓"), ("remove", "删除持仓"),
+    ("cash", "修改现金"), ("import", "导入 CSV"), ("export", "导出 CSV"),
+    ("history", "查看操作记录"), ("cooldown", "查看冷却股票"),
+    ("signals", "查看最近建议"), ("settings", "通知设置"),
+    ("auto_notice_date", "设置每月提醒日期或随机提醒")]
+_ADMIN_MENU = _PREMIUM_MENU + [
+    ("admin_help", "管理员命令说明书"), ("admin_list", "分页查看管理员"),
+    ("admin_show", "查询管理员"), ("admin_add", "添加管理员"),
+    ("admin_edit", "修改管理员备注"), ("admin_remove", "移除管理员"),
+    ("whitelist_list", "分页查看免费白名单"), ("whitelist_show", "查询白名单"),
+    ("whitelist_add", "添加免费白名单"), ("whitelist_edit", "修改白名单备注"),
+    ("whitelist_remove", "移除免费白名单"), ("announce", "发布普通公告"),
+    ("important_announce", "向所有已验证用户发送并置顶公告"),
+    ("users", "查看用户概况"), ("stats", "查看系统统计"),
+    ("health", "检查运行状态"), ("runstrategy", "立即运行策略")]
+
+
+def _menu_for(status: str) -> list[BotCommand]:
+    items = (_ADMIN_MENU if status == "admin" else _PREMIUM_MENU if status in {"paid", "whitelist"}
+             else _REGISTERED_MENU if status == "subscription_required" else _PUBLIC_MENU)
+    return [BotCommand(command, description) for command, description in items]
+
+
+async def _refresh_user_menu(application, telegram_id: int, status: str | None = None) -> None:
+    setter = getattr(getattr(application, "bot", None), "set_my_commands", None)
+    if setter is None:
+        return
+    if status is None:
+        with transaction(application.bot_data["session_factory"]) as session:
+            status = application.bot_data["accounts"].access_status(session, telegram_id)
+    try:
+        await setter(_menu_for(status), scope=BotCommandScopeChat(telegram_id))
+    except TelegramError:
+        log.warning("could not refresh command menu for user %s", telegram_id, exc_info=True)
+
+
+async def initialize_command_menus(application: Application) -> None:
+    """Publish role-appropriate slash suggestions at startup and for existing users."""
+    try:
+        await application.bot.set_my_commands(_menu_for("unregistered"),
+                                              scope=BotCommandScopeAllPrivateChats())
+    except TelegramError:
+        log.warning("could not publish default command menu", exc_info=True)
+    with transaction(application.bot_data["session_factory"]) as session:
+        accounts = application.bot_data["accounts"]
+        users = [(user.telegram_id, accounts.access_status(session, user.telegram_id))
+                 for user in session.scalars(select(User).where(User.is_active))]
+    for telegram_id, status in users:
+        await _refresh_user_menu(application, telegram_id, status)
+        await asyncio.sleep(0.04)
 
 
 def _access_text(status: str) -> str:
@@ -125,6 +190,8 @@ async def authorization_gate(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     if command in allowed:
         return
+    if status == "subscription_required":
+        await _refresh_user_menu(context.application, update.effective_user.id, status)
     if update.callback_query:
         await update.callback_query.answer("请先验证手机号。" if status == "unregistered" else "请先开通 Premium。", show_alert=True)
     elif message:
@@ -144,6 +211,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     accounts, _ = _services(context)
     with transaction(context.application.bot_data["session_factory"]) as session:
         status = accounts.access_status(session, update.effective_user.id)
+    await _refresh_user_menu(context.application, update.effective_user.id, status)
     if status != "unregistered":
         await update.message.reply_text("👋 欢迎回来。\n\n" + _access_text(status) +
                                         ("\n\n" + (ADMIN_QUICK if status == "admin" else QUICK)
@@ -198,6 +266,7 @@ async def contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         text = "这个手机号已经绑定了另一个 Telegram 账号。为防止被冒用，不能自动换绑，请联系管理员核实后处理。" if "already bound" in str(exc) else str(exc)
         await update.message.reply_text(text, reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
+    await _refresh_user_menu(context.application, update.effective_user.id, status)
     await update.message.reply_text(
         "✅ <b>注册完成</b>。\n" + _access_text(status) +
         ("\n\n" + (ADMIN_QUICK if status == "admin" else QUICK)
@@ -236,7 +305,10 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     await update.message.reply_text(
         SUBSCRIPTION_OFFER,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ 开通 Premium", url=link)]]),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⭐ 开通 Premium", url=link)],
+            [InlineKeyboardButton("💬 联系管理员了解优惠", url=ADMIN_CONTACT_URL)],
+        ]),
     )
 
 
@@ -274,6 +346,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         created = accounts.record_subscription_payment(
             session, telegram_id, payment.telegram_payment_charge_id, payment.total_amount, expiry)
     if created:
+        await _refresh_user_menu(context.application, telegram_id, "paid")
         await update.message.reply_text("✅ 付费 Premium 已激活。\n\n" + QUICK, parse_mode=ParseMode.HTML)
 
 
@@ -286,24 +359,112 @@ def _whitelist_phone(args: list[str]) -> str:
 
 async def whitelist_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
-        phone = _whitelist_phone(context.args)
+        phone = _whitelist_phone(context.args[:2])
+        label = _admin_label(context.args[2:])
         with transaction(context.application.bot_data["session_factory"]) as session:
-            created = context.application.bot_data["accounts"].whitelist_add(session, update.effective_user.id, phone)
+            created = context.application.bot_data["accounts"].whitelist_add(session, update.effective_user.id, phone, label)
+            target = session.scalar(select(User.telegram_id).where(
+                User.phone_fingerprint == context.application.bot_data["accounts"].protector.fingerprint(phone),
+                User.is_active))
     except (ValueError, PermissionError) as exc:
         await update.message.reply_text(str(exc))
         return
-    await update.message.reply_text("白名单已添加；已验证该号码的用户立即获得免费 Premium。" if created else "该号码已在白名单中。")
+    if created and target is not None:
+        await _refresh_user_menu(context.application, target)
+    await update.message.reply_text("白名单已添加；已验证该号码的用户立即获得免费 Premium。" if created else "该号码已在白名单中；可用 /whitelist_edit 修改备注。")
 
 
 async def whitelist_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
+        if len(context.args) != 2:
+            raise ValueError("用法：/whitelist_remove +86 13800138000")
         phone = _whitelist_phone(context.args)
         with transaction(context.application.bot_data["session_factory"]) as session:
+            target = session.scalar(select(User.telegram_id).where(
+                User.phone_fingerprint == context.application.bot_data["accounts"].protector.fingerprint(phone),
+                User.is_active))
             removed = context.application.bot_data["accounts"].whitelist_remove(session, update.effective_user.id, phone)
     except (ValueError, PermissionError) as exc:
         await update.message.reply_text(str(exc))
         return
+    if removed and target is not None:
+        await _refresh_user_menu(context.application, target)
     await update.message.reply_text("已从白名单移除；用户其他已付款权益仍然有效。" if removed else "该号码不在白名单中。")
+
+
+async def whitelist_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args
+    if len(args) > 1 or (args and (not args[0].isascii() or not args[0].isdecimal() or len(args[0]) > 6)):
+        await update.message.reply_text("用法：/whitelist_list [页码]，页码从 1 开始。")
+        return
+    page = int(args[0]) if args else 1
+    if page < 1:
+        await update.message.reply_text("页码从 1 开始。")
+        return
+    accounts, _ = _services(context)
+    try:
+        with transaction(context.application.bot_data["session_factory"]) as session:
+            accounts.require_maintainer(session, update.effective_user.id)
+            rows = list(session.scalars(select(PhoneWhitelist).order_by(PhoneWhitelist.created_at,
+                                                                       PhoneWhitelist.phone_fingerprint)))
+            bound = {user.phone_fingerprint: user.telegram_id for user in session.scalars(select(User).where(User.is_active))}
+    except PermissionError:
+        await update.message.reply_text("仅已验证的管理员可查看白名单。")
+        return
+    size = 10
+    pages = max(1, (len(rows) + size - 1) // size)
+    if page > pages:
+        await update.message.reply_text(f"白名单只有 {pages} 页。")
+        return
+    lines = []
+    for row in rows[(page - 1) * size:page * size]:
+        label = f"（{html.escape(row.label)}）" if row.label else ""
+        user = f"已绑定 ID <code>{bound[row.phone_fingerprint]}</code>" if row.phone_fingerprint in bound else "尚未绑定"
+        lines.append(f"• 指纹 <code>{row.phone_fingerprint[:10]}…</code> {user}{label}")
+    body = "\n".join(lines) if lines else "目前没有白名单号码。"
+    await update.message.reply_text(
+        f"📋 <b>免费 Premium 白名单</b>（第 {page}/{pages} 页，共 {len(rows)} 项）\n{body}\n\n"
+        "仅存手机号指纹；用 /whitelist_show +国家区号 手机号 精确查询。",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def whitelist_show(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        if len(context.args) != 2:
+            raise ValueError("用法：/whitelist_show +86 13800138000")
+        phone = _whitelist_phone(context.args)
+        accounts, _ = _services(context)
+        with transaction(context.application.bot_data["session_factory"]) as session:
+            accounts.require_maintainer(session, update.effective_user.id)
+            fingerprint = accounts.protector.fingerprint(phone)
+            row = session.get(PhoneWhitelist, fingerprint)
+            user = session.scalar(select(User).where(User.phone_fingerprint == fingerprint, User.is_active))
+    except (ValueError, PermissionError) as exc:
+        await update.message.reply_text(str(exc))
+        return
+    if row is None:
+        await update.message.reply_text("该号码不在白名单中。")
+        return
+    label = html.escape(row.label) if row.label else "无"
+    bound = f"已绑定 ID <code>{user.telegram_id}</code>" if user else "尚未绑定"
+    await update.message.reply_text(
+        f"白名单：已加入\n手机号指纹：<code>{fingerprint[:10]}…</code>\n账号：{bound}\n备注：{label}",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def whitelist_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        phone = _whitelist_phone(context.args[:2])
+        label = _admin_label(context.args[2:], required=True)
+        with transaction(context.application.bot_data["session_factory"]) as session:
+            changed = context.application.bot_data["accounts"].whitelist_edit(session, update.effective_user.id,
+                                                                                 phone, label)
+    except (ValueError, PermissionError) as exc:
+        await update.message.reply_text(str(exc))
+        return
+    await update.message.reply_text("白名单备注已更新。" if changed else "该号码不在白名单中。")
 
 
 def _admin_target(args: list[str]) -> tuple[str, int | str, int]:
@@ -429,6 +590,9 @@ async def admin_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         with transaction(context.application.bot_data["session_factory"]) as session:
             created = (accounts.admin_add_phone(session, update.effective_user.id, target, label)
                        if kind == "phone" else accounts.admin_add(session, update.effective_user.id, target, label))
+            target_id = (session.scalar(select(User.telegram_id).where(
+                User.phone_fingerprint == accounts.protector.fingerprint(target), User.is_active))
+                if kind == "phone" else target)
             verified = (session.scalar(select(User.id).where(
                 User.phone_fingerprint == accounts.protector.fingerprint(target), User.is_active)) is not None
                 if kind == "phone" else accounts.is_registered(session, target))
@@ -438,6 +602,8 @@ async def admin_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except PermissionError as exc:
         await update.message.reply_text(str(exc) if "Owner" in str(exc) else "仅已验证的管理员可添加管理员。")
         return
+    if created and verified and target_id is not None:
+        await _refresh_user_menu(context.application, target_id)
     await update.message.reply_text(
         ("已添加手机号管理员授权。" if kind == "phone" else f"已添加管理员 <code>{target}</code>。")
         + ("权限已生效。" if verified else "该用户须先用 /start 验证本人手机号，权限才会生效。")
@@ -466,6 +632,9 @@ async def admin_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         kind, target, _ = _admin_target(context.args)
         accounts, _ = _services(context)
         with transaction(context.application.bot_data["session_factory"]) as session:
+            target_id = (session.scalar(select(User.telegram_id).where(
+                User.phone_fingerprint == accounts.protector.fingerprint(target), User.is_active))
+                if kind == "phone" else target)
             removed = (accounts.admin_remove_phone(session, update.effective_user.id, target)
                        if kind == "phone" else accounts.admin_remove(session, update.effective_user.id, target))
     except ValueError as exc:
@@ -474,6 +643,8 @@ async def admin_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except PermissionError as exc:
         await update.message.reply_text(str(exc) if "Owner" in str(exc) else "仅已验证的管理员可移除管理员。")
         return
+    if removed and target_id is not None:
+        await _refresh_user_menu(context.application, target_id)
     await update.message.reply_text("这项管理员授权已移除；如有另一项授权，其权限仍有效。" if removed else "该手机号或 Telegram ID 没有对应的管理员授权。")
 
 
@@ -560,6 +731,7 @@ async def unbind_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         del waiters[key]
     if done:
         log.info("a user unbound and their data was deleted")
+        await _refresh_user_menu(context.application, update.effective_user.id, "unregistered")
     await query.edit_message_text("已解绑，你的全部数据已删除。需要时发 /start 重新绑定。" if done else "你还没有绑定。发 /start 开始绑定。")
 
 
@@ -934,9 +1106,11 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if context.args and context.args[0] in {"signals", "announcements"}:
             field = context.args[0] + "_enabled"
             setattr(prefs, field, not getattr(prefs, field))
+        schedule = ("每月随机一个美股交易日" if prefs.auto_notice_day == 0 else
+                    f"每月第 {prefs.auto_notice_day} 个美股交易日")
         text = (f"🔔 <b>通知设置</b>\n每月策略推送：{'开 ✅' if prefs.signals_enabled else '关 ⛔'}\n公告通知：{'开 ✅' if prefs.announcements_enabled else '关 ⛔'}\n\n"
-                f"自动通知日期：每月第 {prefs.auto_notice_day} 个美股交易日\n\n"
-                "切换：/settings signals 或 /settings announcements\n修改日期：/auto_notice_date 5")
+                f"自动通知日期：{schedule}\n\n"
+                "切换：/settings signals 或 /settings announcements\n修改日期：/auto_notice_date 5；随机：/auto_notice_date random")
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
@@ -1086,25 +1260,49 @@ async def auto_notice_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     app = context.application
     try:
         if len(context.args) > 1:
-            raise ValueError("只接受一个整数，例如 /auto_notice_date 5。设置未修改。")
-        day = strategy.parse_notice_day(context.args[0]) if context.args else None
+            raise ValueError("只接受一个参数，例如 /auto_notice_date 5 或 /auto_notice_date random。设置未修改。")
+        day = (0 if context.args and context.args[0].lower() in {"random", "随机"} else
+               strategy.parse_notice_day(context.args[0]) if context.args else None)
+        tz, hour = app.bot_data.get("strategy_push", strategy.DEFAULT_PUSH)
+        today = datetime.now(ZoneInfo(tz)).date()
         with transaction(app.bot_data["session_factory"]) as session:
             user = _require(session, update, context)
             prefs = session.get(NotificationPreference, user.id)
             if day is not None:
+                if day == 0 and prefs.auto_notice_day != 0:
+                    prefs.random_notice_started_on = today
+                elif day != 0:
+                    prefs.random_notice_started_on = None
                 prefs.auto_notice_day = day
-            day, completed, enabled = prefs.auto_notice_day, prefs.last_notice_month, prefs.signals_enabled
+            day, completed, enabled, started_on = (prefs.auto_notice_day, prefs.last_notice_month,
+                                                   prefs.signals_enabled, prefs.random_notice_started_on)
+            user_id = user.id
     except PermissionError:
         await update.message.reply_text("请先使用 /start 注册。")
         return
     except ValueError as exc:
         await update.message.reply_text(str(exc))
         return
-    tz, hour = app.bot_data.get("strategy_push", strategy.DEFAULT_PUSH)
-    today = datetime.now(ZoneInfo(tz)).date()
+    if day == 0:
+        text = (f"{'已设置' if context.args else '当前设置'}：每月随机选一个美股交易日通知，只影响你自己。\n"
+                f"通知时间：{tz} {hour:02d}:00 后的定时检查。\n"
+                "用法：/auto_notice_date random；改回固定日期：/auto_notice_date 5。\n"
+                "一个月最多通知一次；当月已通知过不会重复通知。")
+        try:
+            text += "\n\n" + await asyncio.to_thread(
+                strategy.random_notice_preview, strategy.strategy_settings(), today, user_id,
+                app.bot_data["accounts"].protector, started_on, completed)
+        except strategy.StrategyUnavailable:
+            text += "\n本月、下个月：交易日历暂不可用，尚未确认。"
+        if not enabled:
+            text += "\n你的策略通知目前已关闭，可用 /settings signals 开启。"
+        if not app.bot_data.get("strategy_autorun"):
+            text += "\n系统自动推送尚未开启；设置已保存，管理员开启后生效。"
+        await update.message.reply_text(text)
+        return
     text = (f"{'已设置' if context.args else '当前设置'}：每月第 {day} 个美股交易日通知，只影响你自己。\n"
             f"通知时间：{tz} {hour:02d}:00 后的定时检查。\n"
-            "用法：/auto_notice_date 5；不带数字可查看当前设置。\n"
+            "用法：/auto_notice_date 5；随机：/auto_notice_date random；不带参数查看设置。\n"
             "交易日不含周末及休市日。当月交易日不足则跳过，不顺延、不提前；当月已通知过也不会重复通知。")
     if day >= 19:
         text += f"\n⚠️ 日期较靠后，2 月等短月份可能没有第 {day} 个交易日。"
@@ -1124,7 +1322,13 @@ async def auto_notice_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def announce_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     with transaction(context.application.bot_data["session_factory"]) as session:
         context.application.bot_data["accounts"].require_maintainer(session, update.effective_user.id)
-    await update.message.reply_text("请输入公告正文。")
+    important = update.message.text.split(maxsplit=1)[0].split("@", 1)[0].lower() == "/important_announce"
+    context.user_data["announcement_important"] = important
+    context.user_data.pop("announcement", None)
+    context.user_data.pop("announcement_nonce", None)
+    await update.message.reply_text(
+        "请输入重要公告正文。确认后会发送给所有已验证用户（包括关闭普通公告通知或尚未开通 Premium 的用户），逐一置顶，并替换上一条重要公告置顶。"
+        if important else "请输入公告正文。")
     return ANNOUNCE_TEXT
 
 
@@ -1133,25 +1337,65 @@ async def announce_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_text("公告不能超过 3500 字。")
         return ANNOUNCE_TEXT
     context.user_data["announcement"] = update.message.text
-    await update.message.reply_text("预览：\n\n" + update.message.text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("确认发布", callback_data="announce:yes"), InlineKeyboardButton("取消", callback_data="announce:no")]]))
+    nonce = secrets.token_urlsafe(12)
+    context.user_data["announcement_nonce"] = nonce
+    important = context.user_data.get("announcement_important", False)
+    preview = "重要公告预览（发送给所有已验证用户并替换旧置顶）：\n\n" if important else "预览：\n\n"
+    await update.message.reply_text(preview + update.message.text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("确认发送并置顶" if important else "确认发布", callback_data=f"announce:yes:{nonce}"), InlineKeyboardButton("取消", callback_data=f"announce:no:{nonce}")]]))
     return ANNOUNCE_CONFIRM
 
 
 async def announce_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
+    match = re.fullmatch(r"announce:(yes|no):([A-Za-z0-9_-]{16})", query.data or "")
+    if not match or context.user_data.get("announcement_nonce") != match.group(2):
+        await query.answer("这个确认按钮已失效，请重新输入命令。", show_alert=True)
+        return ANNOUNCE_CONFIRM
     await query.answer()
-    if query.data == "announce:no":
+    context.user_data.pop("announcement_nonce", None)
+    if match.group(1) == "no":
+        context.user_data.pop("announcement", None)
+        context.user_data.pop("announcement_important", None)
         await query.edit_message_text("已取消。")
+        return ConversationHandler.END
+    content = context.user_data.pop("announcement", None)
+    important = context.user_data.pop("announcement_important", False)
+    if content is None:
+        await query.edit_message_text("这条公告预览已失效，请重新输入命令。")
         return ConversationHandler.END
     with transaction(context.application.bot_data["session_factory"]) as session:
         context.application.bot_data["accounts"].require_maintainer(session, update.effective_user.id)
-        item = Announcement(content=context.user_data.pop("announcement"), created_by_telegram_id=update.effective_user.id)
+        item = Announcement(content=content, important=important,
+                            created_by_telegram_id=update.effective_user.id)
         session.add(item)
         session.flush()
         announcement_id = item.id
-    await query.edit_message_text("公告已保存，开始后台推送。")
-    context.application.create_task(publish_announcement(context.application, announcement_id), update=update)
+    await query.edit_message_text("重要公告已保存，开始向所有已验证用户发送并置顶。完成后会通知你。" if important else
+                                  "公告已保存，开始后台推送。完成后会通知你。")
+    context.application.create_task(
+        _publish_announcement_job(context.application, announcement_id, update.effective_user.id), update=update)
     return ConversationHandler.END
+
+
+async def _publish_announcement_job(application, announcement_id: int, admin_id: int) -> None:
+    try:
+        await publish_announcement(application, announcement_id)
+        with transaction(application.bot_data["session_factory"]) as session:
+            item = session.get(Announcement, announcement_id)
+            deliveries = list(session.scalars(select(AnnouncementDelivery).where(
+                AnnouncementDelivery.announcement_id == announcement_id)))
+            done = sum(bool(row.pinned_at if item.important else row.delivered_at) for row in deliveries)
+        result = (f"{'重要' if item.important else '普通'}公告 #{announcement_id} 处理完成："
+                  f"{done}/{len(deliveries)} 位用户{'已发送并置顶' if item.important else '已发送'}。")
+        if done < len(deliveries):
+            result += "部分用户无法接收或置顶；失败记录已保存。"
+    except Exception:
+        log.exception("announcement %s failed", announcement_id)
+        result = f"公告 #{announcement_id} 推送发生异常，请检查服务日志。"
+    try:
+        await application.bot.send_message(admin_id, result)
+    except TelegramError:
+        log.warning("could not deliver announcement result to admin %s", admin_id, exc_info=True)
 
 
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1220,13 +1464,15 @@ def configure_application(application: Application, accounts: AccountService, fa
     application.add_handler(ConversationHandler([CommandHandler("edit", edit_start)], {EDIT_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_data)], REMOVE_CONFIRM: [CallbackQueryHandler(edit_confirm, pattern=r"^edit:")]}, fallbacks=[cancel_handler]))
     application.add_handler(ConversationHandler([CommandHandler("remove", remove_start)], {REMOVE_CONFIRM: [CallbackQueryHandler(remove_confirm, pattern=r"^remove:")]}, fallbacks=[cancel_handler]))
     application.add_handler(ConversationHandler([CommandHandler("cash", cash_start)], {CASH_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, cash_data)]}, fallbacks=[cancel_handler]))
-    application.add_handler(ConversationHandler([CommandHandler("announce", announce_start)], {ANNOUNCE_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, announce_text)], ANNOUNCE_CONFIRM: [CallbackQueryHandler(announce_confirm, pattern=r"^announce:")]}, fallbacks=[cancel_handler]))
+    application.add_handler(ConversationHandler([CommandHandler(["announce", "important_announce"], announce_start)], {ANNOUNCE_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, announce_text)], ANNOUNCE_CONFIRM: [CallbackQueryHandler(announce_confirm, pattern=r"^announce:")]}, fallbacks=[cancel_handler]))
     application.add_handler(ConversationHandler([CommandHandler("chat", chat_start)], {CHAT_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, chat_text)]}, fallbacks=[cancel_handler]))
     application.add_handler(ConversationHandler([CallbackQueryHandler(chat_reply_start, pattern=r"^chat-reply:")], {CHAT_REPLY_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, chat_reply_text)]}, fallbacks=[cancel_handler]))
     for command, handler in [("help", help_command), ("privacy", privacy), ("subscribe", subscribe),
                              ("admin_help", admin_help), ("admin_list", admin_list), ("admin_show", admin_show),
                              ("admin_add", admin_add), ("admin_edit", admin_edit), ("admin_remove", admin_remove),
-                             ("whitelist_add", whitelist_add), ("whitelist_remove", whitelist_remove),
+                             ("whitelist_add", whitelist_add), ("whitelist_list", whitelist_list),
+                             ("whitelist_show", whitelist_show), ("whitelist_edit", whitelist_edit),
+                             ("whitelist_remove", whitelist_remove),
                              ("portfolio", portfolio), ("import", import_start), ("export", export_command), ("history", history), ("check", check), ("signals", signals), ("cooldown", cooldown), ("unbind", unbind_start), ("help_import", help_import), ("help_faq", help_faq), ("settings", settings), ("users", users_command), ("stats", stats_command), ("health", health), ("runstrategy", run_strategy)]:
         application.add_handler(CommandHandler(command, handler))
     application.add_handler(PreCheckoutQueryHandler(pre_checkout))

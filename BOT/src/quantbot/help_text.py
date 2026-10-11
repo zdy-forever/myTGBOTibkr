@@ -64,7 +64,7 @@ QUICK = f"""📘 <b>快速上手</b>
 
 ⚙️ <b>设置</b>
 /settings　查看通知设置。<code>/settings signals</code> 开/关每月推送，<code>/settings announcements</code> 开/关公告
-/auto_notice_date　修改个人通知日期，例如 <code>/auto_notice_date 5</code> 表示第 5 个美股交易日；不带数字查看设置及日期预览
+/auto_notice_date　修改个人通知日期，例如 <code>/auto_notice_date 5</code> 表示第 5 个美股交易日；<code>/auto_notice_date random</code> 每月随机选一个交易日；不带参数查看设置及日期预览
 /unbind　解绑手机号并删除我的全部数据。发送后点确认；建议先 /export 备份
 /cancel　在输入过程中随时取消
 /subscribe　查看订阅状态或开通 Premium
@@ -95,12 +95,16 @@ ADMIN_HELP = """🛡️ <b>管理员说明书</b>
 普通管理员可以管理其他普通管理员，但不能添加、修改或移除 Bot Owner。Owner 的 ID 只能在服务器配置中设置。新管理员仍须先用 /start 验证本人手机号。
 
 <b>免费白名单</b>
-/whitelist_add +86 13800138000　添加手机号到免费 Premium 白名单
+/whitelist_list　每页 10 项；<code>/whitelist_list 2</code> 查看第 2 页
+/whitelist_show +86 13800138000　查询号码是否在白名单及其备注
+/whitelist_add +86 13800138000 张三　添加手机号到免费 Premium 白名单，备注可省略
+/whitelist_edit +86 13800138000 新备注　修改备注；用 <code>-</code> 清空
 /whitelist_remove +86 13800138000　移除手机号
-必须写国家区号与手机号；机器人只保存 HMAC 指纹。
+必须写国家区号与手机号；机器人只保存 HMAC 指纹，列表不会还原显示完整号码。
 
 <b>运营与维护</b>
 /announce　编辑、预览并确认发布公告
+/important_announce　向所有已验证用户发送并置顶重要公告；下一条重要公告会替换旧置顶
 /users　查看用户概况
 /stats　查看系统统计
 /health　检查 Bot 与数据库状态
@@ -161,7 +165,7 @@ FAQ = """❓ <b>常见问题</b>
 /settings signals（再发一次就重新打开）。/check 随时可用。
 
 <b>怎么修改每月通知日期？</b>
-发 /auto_notice_date 5，设为每月第 5 个美股交易日。只接受 1–23 的整数，周末和休市日不算。回复会说明本月、下个月是否生效，并检查未来 12 个月中哪些月份交易日不足。交易日不足则当月跳过，不自动提前或顺延；当月日期已过不补发，当月已通知过不重复发送。设置只影响自己，不会自动开启已关闭的通知。
+发 /auto_notice_date 5，设为每月第 5 个美股交易日；或发 /auto_notice_date random，每月随机选一个真实美股交易日。固定日期只接受 1–23 的整数，周末和休市日不算。回复会说明本月、下个月是否生效；固定模式还会检查未来 12 个月中哪些月份交易日不足。交易日不足则当月跳过，不自动提前或顺延；当月日期已过不补发，当月已通知过不重复发送。随机模式当月仅从设置之后的交易日中选。设置只影响自己，不会自动开启已关闭的通知。
 
 <b>币种？</b>
 只分析美元金额，其他币种会被忽略并提示。"""

@@ -461,7 +461,7 @@ def test_help_topics_exist_fit_telegram_and_cover_every_registered_command():
     assert all(len(t) < 4096 for t in (help_text.QUICK, help_text.CSV, help_text.FAQ))
     app = bot.configure_application(Application.builder().token("123456:TEST").build(), None, None)
     commands = {c for handler in app.handlers[0] for c in getattr(handler, "commands", ())}
-    admin = {"users", "stats", "health", "runstrategy", "announce", "whitelist_add", "whitelist_remove",
+    admin = {"users", "stats", "health", "runstrategy", "announce", "important_announce", "whitelist_add", "whitelist_list", "whitelist_show", "whitelist_edit", "whitelist_remove",
              "admin_help", "admin_list", "admin_show", "admin_add", "admin_edit", "admin_remove",
              "start", "cancel", "help", "signals"}
     assert {"check", "cooldown"} <= commands

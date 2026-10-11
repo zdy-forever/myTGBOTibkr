@@ -217,6 +217,9 @@ async def test_payment_only_grants_registered_user_and_expires(factory, accounts
     assert payment_bot.calls[0]["currency"] == "XTR"
     assert payment_bot.calls[0]["prices"][0].amount == 400
     assert payment_bot.calls[0]["subscription_period"] == 2592000
+    assert "联系管理员可以有优惠" in offer.replies[0][0]
+    assert "https://t.me/ZhenAi_YongHeng" in offer.replies[0][0]
+    assert offer.replies[0][1]["reply_markup"].inline_keyboard[1][0].url == "https://t.me/ZhenAi_YongHeng"
 
     checkout = SimpleNamespace(from_user=SimpleNamespace(id=101), invoice_payload="premium:101",
                                currency="XTR", total_amount=400, answers=[])
