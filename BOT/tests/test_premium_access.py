@@ -486,8 +486,14 @@ def test_premium_migration_keeps_legacy_portfolio_and_history(tmp_path, monkeypa
                           "VALUES ('old','AAPL','US',2,100,'USD','2026-01-01','2026-01-01')"))
         conn.execute(text("INSERT INTO transactions (user_id,type,actor_telegram_id,created_at) "
                           "VALUES ('old','POSITION_CREATE',101,'2026-01-01')"))
+        conn.execute(text("INSERT INTO announcements (id,content,created_by_telegram_id,created_at) "
+                          "VALUES (1,'old announcement',999,'2026-01-01')"))
+        conn.execute(text("INSERT INTO announcement_deliveries (announcement_id,user_id,attempts) "
+                          "VALUES (1,'old',0)"))
     command.upgrade(cfg, "head")
     with engine.begin() as conn:
+        assert conn.execute(text("SELECT count(*) FROM sqlite_master WHERE type='table' "
+                                 "AND name IN ('announcements','announcement_deliveries')")).scalar() == 0
         assert conn.execute(text("SELECT phone_fingerprint FROM users WHERE id='old'")).scalar() == "fingerprint"
         assert conn.execute(text("SELECT phone_encrypted FROM users WHERE id='old'")).scalar() == "old ciphertext"
         assert conn.execute(text("SELECT balance FROM cash_accounts WHERE user_id='old'")).scalar() == 123.45

@@ -39,7 +39,7 @@ from telegram.ext import (
 )
 
 from .allocations import allocation_fraction, parse_weights, save_weights, selections
-from .announcements import pending_announcement_ids, publish_announcement
+from .announcements import publish_announcement
 from .chat import (
     create_message,
     deliver_chat_messages,
@@ -65,8 +65,6 @@ from .help_text import (
 from .models import (
     AdminGrant,
     AdminPhoneGrant,
-    Announcement,
-    AnnouncementDelivery,
     ChatMessage,
     NotificationPreference,
     PhoneWhitelist,
@@ -74,6 +72,7 @@ from .models import (
     SubscriptionPayment,
     Transaction,
     User,
+    UserIdWhitelist,
     UserStrategy,
 )
 from .services import (
@@ -452,11 +451,11 @@ def _whitelist_phone(args: list[str]) -> str:
 
 async def whitelist_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
-        phone = _whitelist_phone(context.args[:2])
-        label = _admin_label(context.args[2:])
+        kind, phone, consumed = _admin_target(context.args)
+        label = _admin_label(context.args[consumed:])
         with transaction(context.application.bot_data["session_factory"]) as session:
             created = context.application.bot_data["accounts"].whitelist_add(session, update.effective_user.id, phone, label)
-            target = session.scalar(select(User.telegram_id).where(
+            target = phone if kind == "id" else session.scalar(select(User.telegram_id).where(
                 User.phone_fingerprint == context.application.bot_data["accounts"].protector.fingerprint(phone),
                 User.is_active))
     except (ValueError, PermissionError) as exc:
@@ -464,16 +463,16 @@ async def whitelist_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     if created and target is not None:
         await _refresh_user_menu(context.application, target)
-    await update.message.reply_text("白名单已添加；已验证该号码的用户立即获得免费 Premium。" if created else "该号码已在白名单中；可用 /whitelist_edit 修改备注。")
+    await update.message.reply_text("白名单已添加；用户验证本人手机号后获得免费 Premium，已验证用户立即生效。" if created else "该目标已在白名单中；可用 /whitelist_edit 修改备注。")
 
 
 async def whitelist_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
-        if len(context.args) != 2:
-            raise ValueError("用法：/whitelist_remove +(国家区号) (手机号)")
-        phone = _whitelist_phone(context.args)
+        kind, phone, consumed = _admin_target(context.args)
+        if len(context.args) != consumed:
+            raise ValueError("只接受一个用户 ID 或 +(国家区号) (手机号)。")
         with transaction(context.application.bot_data["session_factory"]) as session:
-            target = session.scalar(select(User.telegram_id).where(
+            target = phone if kind == "id" else session.scalar(select(User.telegram_id).where(
                 User.phone_fingerprint == context.application.bot_data["accounts"].protector.fingerprint(phone),
                 User.is_active))
             removed = context.application.bot_data["accounts"].whitelist_remove(session, update.effective_user.id, phone)
@@ -482,7 +481,7 @@ async def whitelist_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     if removed and target is not None:
         await _refresh_user_menu(context.application, target)
-    await update.message.reply_text("已从白名单移除；用户其他已付款权益仍然有效。" if removed else "该号码不在白名单中。")
+    await update.message.reply_text("已移除此项白名单；其他 ID/手机号白名单、管理员或已付款权益仍然有效。" if removed else "该目标不在白名单中。")
 
 
 async def whitelist_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -500,6 +499,10 @@ async def whitelist_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             accounts.require_maintainer(session, update.effective_user.id)
             rows = list(session.scalars(select(PhoneWhitelist).order_by(PhoneWhitelist.created_at,
                                                                        PhoneWhitelist.phone_fingerprint)))
+            rows += list(session.scalars(select(UserIdWhitelist).order_by(UserIdWhitelist.created_at,
+                                                                         UserIdWhitelist.telegram_id)))
+            rows.sort(key=lambda row: (row.created_at, str(row.telegram_id) if isinstance(row, UserIdWhitelist)
+                                      else row.phone_fingerprint))
             bound = {user.phone_fingerprint: user.telegram_id for user in session.scalars(select(User).where(User.is_active))}
     except PermissionError:
         await update.message.reply_text("仅已验证的管理员可查看白名单。")
@@ -512,52 +515,58 @@ async def whitelist_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     lines = []
     for row in rows[(page - 1) * size:page * size]:
         label = f"（{html.escape(row.label)}）" if row.label else ""
+        if isinstance(row, UserIdWhitelist):
+            state = "已验证" if row.telegram_id in bound.values() else "待验证手机号"
+            lines.append(f"• 用户 ID <code>{row.telegram_id}</code> {state}{label}")
+            continue
         user = f"已绑定 ID <code>{bound[row.phone_fingerprint]}</code>" if row.phone_fingerprint in bound else "尚未绑定"
         lines.append(f"• 指纹 <code>{row.phone_fingerprint[:10]}…</code> {user}{label}")
-    body = "\n".join(lines) if lines else "目前没有白名单号码。"
+    body = "\n".join(lines) if lines else "目前没有白名单记录。"
     await update.message.reply_text(
         f"📋 <b>免费 Premium 白名单</b>（第 {page}/{pages} 页，共 {len(rows)} 项）\n{body}\n\n"
-        "仅存手机号指纹；用 /whitelist_show +国家区号 手机号 精确查询。",
+        "ID 与手机号为独立授权；手机号仅存指纹。用 /whitelist_show 查询用户 ID 或手机号。",
         parse_mode=ParseMode.HTML,
     )
 
 
 async def whitelist_show(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
-        if len(context.args) != 2:
-            raise ValueError("用法：/whitelist_show +(国家区号) (手机号)")
-        phone = _whitelist_phone(context.args)
+        kind, phone, consumed = _admin_target(context.args)
+        if len(context.args) != consumed:
+            raise ValueError("只接受一个用户 ID 或 +(国家区号) (手机号)。")
         accounts, _ = _services(context)
         with transaction(context.application.bot_data["session_factory"]) as session:
             accounts.require_maintainer(session, update.effective_user.id)
-            fingerprint = accounts.protector.fingerprint(phone)
-            row = session.get(PhoneWhitelist, fingerprint)
-            user = session.scalar(select(User).where(User.phone_fingerprint == fingerprint, User.is_active))
+            model, key = accounts.whitelist_target(phone)
+            row = session.get(model, key)
+            user = (accounts.by_telegram(session, phone) if kind == "id" else
+                    session.scalar(select(User).where(User.phone_fingerprint == key, User.is_active)))
     except (ValueError, PermissionError) as exc:
         await update.message.reply_text(str(exc))
         return
     if row is None:
-        await update.message.reply_text("该号码不在白名单中。")
+        await update.message.reply_text("该目标不在白名单中。")
         return
     label = html.escape(row.label) if row.label else "无"
     bound = f"已绑定 ID <code>{user.telegram_id}</code>" if user else "尚未绑定"
+    identity = f"用户 ID：<code>{key}</code>" if kind == "id" else f"手机号指纹：<code>{key[:10]}…</code>"
     await update.message.reply_text(
-        f"白名单：已加入\n手机号指纹：<code>{fingerprint[:10]}…</code>\n账号：{bound}\n备注：{label}",
+        f"白名单：已加入\n{identity}\n账号：{bound}\n备注：{label}",
         parse_mode=ParseMode.HTML,
     )
 
 
 async def whitelist_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
-        phone = _whitelist_phone(context.args[:2])
-        label = _admin_label(context.args[2:], required=True)
+        _, phone, consumed = _admin_target(context.args)
+        label = _admin_label(context.args[consumed:], required=True)
         with transaction(context.application.bot_data["session_factory"]) as session:
             changed = context.application.bot_data["accounts"].whitelist_edit(session, update.effective_user.id,
                                                                                  phone, label)
     except (ValueError, PermissionError) as exc:
         await update.message.reply_text(str(exc))
         return
-    await update.message.reply_text("白名单备注已更新。" if changed else "该号码不在白名单中。")
+    await update.message.reply_text("白名单备注已更新。" if changed else "该目标不在白名单中。")
 
 
 def _admin_target(args: list[str]) -> tuple[str, int | str, int]:
@@ -1537,8 +1546,9 @@ async def announce_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data.pop("announcement", None)
     context.user_data.pop("announcement_nonce", None)
     await update.message.reply_text(
-        "请输入重要公告正文。确认后会发送给所有已验证用户（包括关闭普通公告通知或尚未开通 Premium 的用户），逐一置顶，并替换上一条重要公告置顶。"
-        if important else "请输入公告正文。")
+        "请输入重要公告正文。确认后会发送给所有已验证用户（包括关闭普通公告通知或尚未开通 Premium 的用户），逐一置顶，并替换本次运行期间的旧重要公告置顶。"
+        "公告及投递记录不落库；重启后不续传，也不能识别重启前的旧置顶。/cancel 取消。"
+        if important else "请输入公告正文。公告及投递记录不落库，重启后不续传。/cancel 取消。")
     return ANNOUNCE_TEXT
 
 
@@ -1575,54 +1585,27 @@ async def announce_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return ConversationHandler.END
     with transaction(context.application.bot_data["session_factory"]) as session:
         context.application.bot_data["accounts"].require_maintainer(session, update.effective_user.id)
-        item = Announcement(content=content, important=important,
-                            created_by_telegram_id=update.effective_user.id)
-        session.add(item)
-        session.flush()
-        announcement_id = item.id
-    await query.edit_message_text("重要公告已保存，开始向所有已验证用户发送并置顶。完成后会通知你。" if important else
-                                  "公告已保存，开始后台推送。完成后会通知你。")
+    await query.edit_message_text("开始向所有已验证用户发送并置顶重要公告。完成后会通知你。公告不写入数据库，重启后不会续传。" if important else
+                                  "开始后台推送公告。完成后会通知你。公告不写入数据库，重启后不会续传。")
     context.application.create_task(
-        _publish_announcement_job(context.application, announcement_id, update.effective_user.id), update=update)
+        _publish_announcement_job(context.application, content, update.effective_user.id, important=important), update=update)
     return ConversationHandler.END
 
 
-async def _publish_announcement_job(application, announcement_id: int, admin_id: int) -> None:
+async def _publish_announcement_job(application, content: str, admin_id: int, *, important: bool = False) -> None:
     try:
-        await publish_announcement(application, announcement_id)
-        with transaction(application.bot_data["session_factory"]) as session:
-            item = session.get(Announcement, announcement_id)
-            deliveries = list(session.scalars(select(AnnouncementDelivery).where(
-                AnnouncementDelivery.announcement_id == announcement_id)))
-            done = sum(bool(row.pinned_at if item.important else row.delivered_at) for row in deliveries)
-        result = (f"{'重要' if item.important else '普通'}公告 #{announcement_id} 处理完成："
-                  f"{done}/{len(deliveries)} 位用户{'已发送并置顶' if item.important else '已发送'}。")
-        if done < len(deliveries):
-            result += "部分用户无法接收或置顶；失败记录已保存。"
-    except Exception:
-        log.exception("announcement %s failed", announcement_id)
-        result = f"公告 #{announcement_id} 推送发生异常，请检查服务日志。"
+        sent, failed = await publish_announcement(application, content, important=important)
+        result = (f"{'重要' if important else '普通'}公告处理完成："
+                  f"{sent} 位用户{'已发送并置顶' if important else '已发送'}，{failed} 位未完成。")
+        if failed:
+            result += "未完成部分不会在重启后续传。"
+    except Exception:  # noqa: BLE001 - avoid persisting announcement content through exception details
+        log.error("announcement delivery failed")
+        result = "公告推送发生异常，未完成部分不会自动续传。"
     try:
         await application.bot.send_message(admin_id, result)
     except TelegramError:
         log.warning("could not deliver announcement result to admin %s", admin_id, exc_info=True)
-
-
-async def resume_announcements(context) -> None:
-    """Resume confirmed publications after restart, including unfinished pinning."""
-    app = context.application
-    lock = app.bot_data.setdefault("announcement_resume_lock", asyncio.Lock())
-    publish_lock = app.bot_data.get("announcement_publish_lock")
-    if lock.locked() or publish_lock and publish_lock.locked():
-        return
-    async with lock:
-        for announcement_id in pending_announcement_ids(app.bot_data["session_factory"]):
-            with transaction(app.bot_data["session_factory"]) as session:
-                item = session.get(Announcement, announcement_id)
-                if item is None:
-                    continue
-                admin_id = item.created_by_telegram_id
-            await _publish_announcement_job(app, announcement_id, admin_id)
 
 
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1681,10 +1664,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 _STAGED_REQUIRED = {
-    "whitelist_add": "请输入：+(国家区号) (手机号) [备注]",
-    "whitelist_show": "请输入：+(国家区号) (手机号)",
-    "whitelist_edit": "请输入：+(国家区号) (手机号) 新备注；输入 - 可清空备注",
-    "whitelist_remove": "请输入：+(国家区号) (手机号)",
+    "whitelist_add": "请输入：(用户ID) [备注]，或 +(国家区号) (手机号) [备注]",
+    "whitelist_show": "请输入：(用户ID) 或 +(国家区号) (手机号)",
+    "whitelist_edit": "请输入：(用户ID) 新备注，或 +(国家区号) (手机号) 新备注；输入 - 可清空备注",
+    "whitelist_remove": "请输入：(用户ID) 或 +(国家区号) (手机号)",
     "admin_show": "请输入：(用户ID) 或 +(国家区号) (手机号)",
     "admin_add": "请输入：(用户ID) [备注]，或 +(国家区号) (手机号) [备注]",
     "admin_edit": "请输入：(用户ID) 新备注，或 +(国家区号) (手机号) 新备注；输入 - 可清空备注",
@@ -1707,12 +1690,11 @@ def _validate_command_args(command: str, args: list[str]) -> None:
     if command == "strategy_weights":
         parse_weights(args)
     elif command.startswith("whitelist_") and command != "whitelist_list":
-        minimum = 3 if command == "whitelist_edit" else 2
-        if len(args) < minimum or (command in {"whitelist_show", "whitelist_remove"} and len(args) != 2):
-            raise ValueError("手机号和备注格式不完整。")
-        _whitelist_phone(args[:2])
+        _, _, consumed = _admin_target(args)
+        if command in {"whitelist_show", "whitelist_remove"} and len(args) != consumed:
+            raise ValueError("此命令只接受一个用户 ID 或一个手机号。")
         if command in {"whitelist_add", "whitelist_edit"}:
-            _admin_label(args[2:], required=command == "whitelist_edit")
+            _admin_label(args[consumed:], required=command == "whitelist_edit")
     elif command.startswith("admin_") and command not in {"admin_list", "admin_help"}:
         _, _, consumed = _admin_target(args)
         if command in {"admin_show", "admin_remove"} and len(args) != consumed:
@@ -1897,6 +1879,4 @@ def configure_application(application: Application, accounts: AccountService, fa
                                             name="strategy-notification-retry")
         application.job_queue.run_repeating(maintain_chat_messages, interval=3600, first=90,
                                             name="chat-message-maintenance")
-        application.job_queue.run_repeating(resume_announcements, interval=60, first=5,
-                                            name="announcement-recovery")
     return application

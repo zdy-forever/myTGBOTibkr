@@ -123,6 +123,14 @@ class PhoneWhitelist(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
+class UserIdWhitelist(Base):
+    __tablename__ = "user_id_whitelist"
+    telegram_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    label: Mapped[str | None] = mapped_column(String(80))
+    created_by_telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class PremiumSubscription(Base):
     __tablename__ = "premium_subscriptions"
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
@@ -224,31 +232,6 @@ class UserSignal(Base):
     notification_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-
-class Announcement(Base):
-    __tablename__ = "announcements"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    created_by_telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    important: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
-    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-
-class AnnouncementDelivery(Base):
-    __tablename__ = "announcement_deliveries"
-    __table_args__ = (UniqueConstraint("announcement_id", "user_id", name="uq_announcement_delivery"),)
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    announcement_id: Mapped[int] = mapped_column(ForeignKey("announcements.id", ondelete="CASCADE"))
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
-    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    message_id: Mapped[int | None] = mapped_column(BigInteger)
-    pin_applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    pinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    unpinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    attempts: Mapped[int] = mapped_column(Integer, default=0)
-    last_error: Mapped[str | None] = mapped_column(Text)
 
 
 class ChatMessage(Base):

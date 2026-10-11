@@ -26,6 +26,7 @@ from .models import (
     Transaction,
     TransactionType,
     User,
+    UserIdWhitelist,
 )
 from .security import PhoneProtector
 
@@ -236,7 +237,8 @@ class AccountService:
             return "unregistered"
         if self.is_maintainer(session, telegram_user_id):
             return "admin"
-        if session.get(PhoneWhitelist, user.phone_fingerprint) is not None:
+        if (session.get(PhoneWhitelist, user.phone_fingerprint) is not None
+                or session.get(UserIdWhitelist, telegram_user_id) is not None):
             return "whitelist"
         subscription = session.get(PremiumSubscription, user.id)
         expiry = subscription.expires_at if subscription else None
@@ -247,29 +249,38 @@ class AccountService:
     def has_premium_access(self, session: Session, telegram_user_id: int, *, now: datetime | None = None) -> bool:
         return self.access_status(session, telegram_user_id, now=now) in {"admin", "whitelist", "paid"}
 
-    def whitelist_add(self, session: Session, telegram_user_id: int, phone: str,
+    def whitelist_target(self, target: int | str):
+        if isinstance(target, int) and not isinstance(target, bool):
+            if not 0 < target <= 2**52 - 1:
+                raise ValueError("Telegram ID 必须是有效的正整数。")
+            return UserIdWhitelist, target
+        return PhoneWhitelist, self.protector.fingerprint(target)
+
+    def whitelist_add(self, session: Session, telegram_user_id: int, phone: int | str,
                       label: str | None = None) -> bool:
         self.require_maintainer(session, telegram_user_id)
-        fingerprint = self.protector.fingerprint(phone)
-        if session.get(PhoneWhitelist, fingerprint):
+        model, key = self.whitelist_target(phone)
+        if session.get(model, key):
             return False
-        session.add(PhoneWhitelist(phone_fingerprint=fingerprint, label=label,
-                                   created_by_telegram_id=telegram_user_id))
+        identity = {"telegram_id" if model is UserIdWhitelist else "phone_fingerprint": key}
+        session.add(model(**identity, label=label, created_by_telegram_id=telegram_user_id))
         return True
 
-    def whitelist_edit(self, session: Session, telegram_user_id: int, phone: str,
+    def whitelist_edit(self, session: Session, telegram_user_id: int, phone: int | str,
                        label: str | None) -> bool:
         self.require_maintainer(session, telegram_user_id)
-        grant = session.get(PhoneWhitelist, self.protector.fingerprint(phone))
+        model, key = self.whitelist_target(phone)
+        grant = session.get(model, key)
         if grant is None:
             return False
         grant.label = label
         return True
 
-    def whitelist_remove(self, session: Session, telegram_user_id: int, phone: str) -> bool:
+    def whitelist_remove(self, session: Session, telegram_user_id: int, phone: int | str) -> bool:
         self.require_maintainer(session, telegram_user_id)
-        fingerprint = self.protector.fingerprint(phone)
-        return bool(session.execute(delete(PhoneWhitelist).where(PhoneWhitelist.phone_fingerprint == fingerprint)).rowcount)
+        model, key = self.whitelist_target(phone)
+        column = model.telegram_id if model is UserIdWhitelist else model.phone_fingerprint
+        return bool(session.execute(delete(model).where(column == key)).rowcount)
 
     def record_subscription_payment(self, session: Session, telegram_user_id: int, charge_id: str,
                                     amount_stars: int, expires_at: datetime) -> bool:

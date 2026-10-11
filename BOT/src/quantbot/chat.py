@@ -12,7 +12,15 @@ from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
 from .db import transaction
-from .models import AdminGrant, AdminPhoneGrant, ChatDelivery, ChatMessage, PhoneWhitelist, User
+from .models import (
+    AdminGrant,
+    AdminPhoneGrant,
+    ChatDelivery,
+    ChatMessage,
+    PhoneWhitelist,
+    User,
+    UserIdWhitelist,
+)
 
 log = logging.getLogger(__name__)
 RETENTION_DAYS = 14
@@ -45,9 +53,12 @@ def _sender_note(session, user_id: str) -> str:
     if user is None:
         return ""
     whitelist = session.get(PhoneWhitelist, user.phone_fingerprint)
+    id_whitelist = session.get(UserIdWhitelist, user.telegram_id)
     admin = session.get(AdminGrant, user.telegram_id)
     phone_admin = session.get(AdminPhoneGrant, user.phone_fingerprint)
-    whitelist_label = (whitelist.label or "").strip() if whitelist else ""
+    whitelist_label = (id_whitelist.label or "").strip() if id_whitelist else ""
+    if not whitelist_label and whitelist:
+        whitelist_label = (whitelist.label or "").strip()
     admin_label = (admin.label or "").strip() if admin else ""
     if not admin_label and phone_admin and phone_admin.telegram_id == user.telegram_id:
         admin_label = (phone_admin.label or "").strip()

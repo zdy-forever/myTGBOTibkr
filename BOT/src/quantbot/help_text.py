@@ -211,11 +211,18 @@ ADMIN_HELP = """🛡️ <b>管理员说明书</b>
 /whitelist_add +(国家区号) (手机号) [备注]　添加手机号到免费 Premium 白名单，备注可省略
 /whitelist_edit +(国家区号) (手机号) 新备注　修改备注；用 <code>-</code> 清空
 /whitelist_remove +(国家区号) (手机号)　移除手机号
-必须写国家区号与手机号；机器人只保存 HMAC 指纹，列表不会还原显示完整号码。
+以上四条也支持用户 ID：
+<code>/whitelist_add (用户ID) [备注]</code>
+<code>/whitelist_show (用户ID)</code>
+<code>/whitelist_edit (用户ID) 新备注</code>
+<code>/whitelist_remove (用户ID)</code>
+可先添加尚未注册的 ID，但用户仍须 /start 验证本人手机号后才能获得 Premium。ID 与手机号是独立授权，移除一项不影响另一项；ID 白名单在解绑后保留，重新验证后生效。手机号仅保存 HMAC 指纹，不显示完整号码。
+留言的白名单备注优先使用 ID 备注，无 ID 备注则使用手机号备注；同时有管理员备注时显示（白名单备注/管理员备注）。
 
 <b>运营与维护</b>
-/announce　编辑、预览并确认发布公告
-/important_announce　向所有已验证用户发送并置顶重要公告；下一条重要公告会替换旧置顶
+/announce　编辑、预览并确认发布普通公告
+/important_announce　向所有已验证用户发送并置顶重要公告；替换本次运行期间的旧重要公告置顶
+两类公告均不附加编号，不持久化正文、投递或置顶记录。重启后不续传，也不能自动移除重启前的旧置顶；Telegram 中已发出的消息仍然保留。
 /users　查看用户概况
 /stats　查看系统统计
 /health　检查 Bot 与数据库状态

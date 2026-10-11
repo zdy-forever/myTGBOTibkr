@@ -208,7 +208,7 @@ async def test_whitelist_command_accepts_followup_message_validates_and_cancels(
     assert "+(国家区号) (手机号)" in command.replies[0][0]
     invalid = Message("不是手机号")
     await bot._staged_command_data(update(invalid, 999), ctx)
-    assert "手机号和备注格式不完整" in invalid.replies[0][0]
+    assert "数字 Telegram ID 或 +国家区号 手机号" in invalid.replies[0][0]
     assert "pending_command_args" in ctx.user_data
     with transaction(factory) as session:
         assert session.query(PhoneWhitelist).count() == 0
