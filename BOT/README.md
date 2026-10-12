@@ -30,6 +30,8 @@ SQLite 启用 foreign keys、WAL 和 `synchronous=NORMAL`。新绑定只保存�
 
 备份可使用 `quant-backup` 或 `python -m quantbot.backup`（使用部署对应 Python，在 `BOT/` 下运行以加载配置）；成功后输出备份路径。源数据库不存在时会报错，不创建空数据库充当备份。
 
+生产服务器通过 `quantbot-backup.timer` 每天自动备份：按服务器本地时区 03:15 触发，并随机延迟最多 15 分钟，服务器关机错过后会在下次启动时补跑。服务使用 `/opt/quantbot/conda-tg/bin/python`，从 `/opt/quantbot/app/BOT/.env` 读取数据库、备份目录和保留天数。日常代码部署不必再次手动备份；涉及删除或重建数据的迁移时，仍建议升级前手动备份。
+
 ```bash
 python3.11 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
@@ -117,9 +119,9 @@ sudo -u quantbot /opt/quantbot/app/.venv/bin/pip install -e '/opt/quantbot/app'
 sudo -u quantbot cp /opt/quantbot/app/.env.example /opt/quantbot/app/.env
 sudo -u quantbot editor /opt/quantbot/app/.env
 sudo -u quantbot /opt/quantbot/app/.venv/bin/alembic -c /opt/quantbot/app/alembic.ini upgrade head
-sudo cp /opt/quantbot/app/deploy/quantbot.service /etc/systemd/system/
-sudo cp /opt/quantbot/app/deploy/quantbot-backup.service /etc/systemd/system/
-sudo cp /opt/quantbot/app/deploy/quantbot-backup.timer /etc/systemd/system/
+sudo cp /opt/quantbot/app/BOT/deploy/quantbot.service /etc/systemd/system/
+sudo cp /opt/quantbot/app/BOT/deploy/quantbot-backup.service /etc/systemd/system/
+sudo cp /opt/quantbot/app/BOT/deploy/quantbot-backup.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now quantbot.service quantbot-backup.timer
 sudo systemctl status quantbot.service
