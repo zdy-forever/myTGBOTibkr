@@ -205,7 +205,7 @@ async def test_gate_blocks_commands_callbacks_and_payments_before_verification(f
     assert "Premium" in callback.answers[0]
 
 
-async def test_strategy_selection_is_per_premium_user_and_strategy_two_stays_unavailable(factory, accounts):
+async def test_strategy_selection_is_per_premium_user_and_strategy_two_is_available(factory, accounts):
     with transaction(factory) as session:
         accounts.register(session, 999, "+61400000999")
         first = accounts.register(session, 101, "+61400000001").user
@@ -226,23 +226,25 @@ async def test_strategy_selection_is_per_premium_user_and_strategy_two_stays_una
     await bot.strategy_command(make_update(menu_message), ctx)
     assert "/strategy1" in menu_message.replies[0][0]
     assert "月度定投个股(加强型 QQQ)" in menu_message.replies[0][0]
-    assert "研发中" in menu_message.replies[0][0]
+    assert "G2 趋势 ETF 轮动" in menu_message.replies[0][0]
 
     select_message = Message(text="/strategy1")
     await bot.strategy_one(make_update(select_message), ctx)
     unavailable_message = Message(text="/strategy2")
     await bot.strategy_two(make_update(unavailable_message), ctx)
-    assert "研发中" in unavailable_message.replies[0][0]
+    assert "已启用策略 2" in unavailable_message.replies[0][0]
     with transaction(factory) as session:
         assert session.get(UserStrategy, (first_id, "strategy1")) is not None
         assert session.get(UserStrategy, (first_id, "strategy_future")) is not None
         assert session.get(UserStrategy, (second_id, "strategy1")) is None
+        assert session.get(UserStrategy, (first_id, "strategy2")) is not None
+        assert session.get(UserStrategy, (second_id, "strategy2")) is None
     off_message = Message(text="/strategy1_off")
     await bot.strategy_one_off(make_update(off_message), ctx)
     with transaction(factory) as session:
         assert session.get(UserStrategy, (first_id, "strategy1")) is None
         assert session.get(UserStrategy, (first_id, "strategy_future")) is not None
-    blocked_check = Message(text="/check")
+    blocked_check = Message(text="/check1")
     with pytest.raises(ApplicationHandlerStop):
         await bot.authorization_gate(make_update(blocked_check), ctx)
     assert "/strategy1" in blocked_check.replies[0][0]

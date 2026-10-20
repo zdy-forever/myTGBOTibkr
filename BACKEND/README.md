@@ -1,6 +1,15 @@
 # 策略目录
 
-- [`strategy1/`](strategy1/)：月度定投个股(加强型 QQQ)，当前唯一开放的策略。包含独立的 `quant_strategy` Python 包、测试、文档和运行缓存。
-- 策略 2 正在研发中，尚无可运行代码。
+- `strategy1/`：月度定投个股(加强型 QQQ)。共享行情与 SEC 财务数据，按用户持仓和个人候选池计算。
+- `strategy2/`：G2 趋势 ETF 轮动。冻结规则与纯状态机来自 auto-quant/strategy2，`sgs.live` 为只读盘前适配器。
 
-Bot 安装策略库时使用 `pip install -e ../BACKEND/strategy1`（从 `BOT/` 目录执行）。策略代码移动后，已有环境也需要重新安装该可编辑包。
+从 BOT 目录安装：
+
+```sh
+pip install -e ../BACKEND/strategy1 -e ../BACKEND/strategy2 -e '.[dev]'
+alembic upgrade head
+```
+
+两策略共用 `STRATEGY_PUSH_TIMEZONE` / `STRATEGY_PUSH_HOUR`；默认北京时间 10:00。
+每个美股交易日检查，休市跳过，开盘后不补发盘前报告。S1 月度买入仍按用户日期；S2 每天计算趋势和操作。
+账户、资金、权限、报告幂等与通知由 BOT 的 `daily_service.py` 管理。任何模块均不自动下单。

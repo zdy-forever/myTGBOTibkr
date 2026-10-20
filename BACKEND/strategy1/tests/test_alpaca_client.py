@@ -70,3 +70,35 @@ def test_sip_requests_stay_16_minutes_behind_so_free_accounts_can_use_them(monke
     assert timedelta(minutes=15) < datetime.now(timezone.utc) - end < timedelta(minutes=18) and seen[0]['feed'] == 'sip'
     AlpacaReadOnly('k', 's', feed='iex').daily_bars(['AAA'], '2026-01-01')
     assert 'end' not in seen[1]                                                                 # the free IEX feed needs no end time
+
+
+@pytest.mark.parametrize('end,expected', [
+    ('2026-10-21T00:00:00Z', '2026-10-20T21:19:00Z'),
+    ('2026-10-20T21:30:00Z', '2026-10-20T21:19:00Z'),
+    ('2026-10-20T21:19:00Z', '2026-10-20T21:19:00Z'),
+    ('2026-10-19T00:00:00Z', '2026-10-19T00:00:00Z'),
+    ('2026-10-21', '2026-10-20T21:19:00Z'),
+    ('2026-10-20T23:30:00+02:00', '2026-10-20T21:19:00Z'),
+])
+def test_explicit_sip_end_obeys_delay_on_every_page(monkeypatch, end, expected):
+    from datetime import datetime, timezone
+    from quant_strategy import alpaca_client
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 20, 21, 35, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(alpaca_client, 'datetime', Clock)
+    s = FakeSession([Resp(200, {'bars': {}, 'next_page_token': 'next'}),
+                     Resp(200, {'bars': {}, 'next_page_token': None})])
+    AlpacaReadOnly('k', 's', feed='sip', session=s).daily_bars(['QQQ'], '2014-01-01', end=end)
+    assert [params['end'] for _, params in s.calls] == [expected, expected]
+    assert all(params['feed'] == 'sip' for _, params in s.calls)
+
+
+def test_explicit_iex_end_is_preserved():
+    s = FakeSession([Resp(200, {'bars': {}})])
+    end = '2099-01-01T00:00:00Z'
+    AlpacaReadOnly('k', 's', feed='iex', session=s).daily_bars(['QQQ'], '2014-01-01', end=end)
+    assert s.calls[0][1]['end'] == end

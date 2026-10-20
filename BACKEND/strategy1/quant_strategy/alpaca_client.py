@@ -73,8 +73,15 @@ class AlpacaReadOnly:
         """Long frame: symbol, date (UTC midnight), open, high, low, close, volume. `adjustment='all'` = split and dividend adjusted."""
         symbols = sorted({s.upper() for s in symbols})
         rows = []
-        if self.feed == 'sip' and not end:
-            end = (datetime.now(timezone.utc) - timedelta(minutes=16)).strftime('%Y-%m-%dT%H:%M:%SZ')    # a free account may query SIP only for data at least 15 minutes old
+        if self.feed == 'sip':
+            # Explicit future/recent bounds (e.g. S2's next session midnight)
+            # must obey the same delay as requests with no end time.
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=16)
+            requested = pd.Timestamp(end) if end else None
+            if requested is not None:
+                requested = requested.tz_localize('UTC') if requested.tzinfo is None else requested.tz_convert('UTC')
+            if requested is None or requested > cutoff:
+                end = cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')
         for i in range(0, len(symbols), chunk):
             token = None
             for _ in range(100):

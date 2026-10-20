@@ -20,16 +20,16 @@ from sqlalchemy.orm import Session
 from telegram.constants import ParseMode
 from telegram.error import RetryAfter, TelegramError
 
-from .allocations import allocation_fraction
+from .allocations import allocated_cash, allocation_fraction, cash_budgets
 from .db import transaction
 from .models import (
-    CashAccount,
     NotificationPreference,
     Position,
     RunStatus,
     Signal,
     SignalAction,
     StrategyRun,
+    StrategyPool,
     Transaction,
     TransactionType,
     User,
@@ -78,10 +78,28 @@ def build_engine(settings):
 
 def held_symbols(session: Session) -> set[str]:
     """Only ticker symbols (no owners, no quantities): the engine needs prices for names outside the ETF pool."""
-    return set(session.scalars(
+    symbols = set(session.scalars(
         select(Position.symbol).join(User).join(UserStrategy, UserStrategy.user_id == User.id).where(
             User.is_active, UserStrategy.strategy_id == STRATEGY_ID,
             Position.currency == "USD", Position.exchange.in_(US_EXCHANGES))))
+    for pool in session.scalars(select(StrategyPool).join(
+            UserStrategy, UserStrategy.user_id == StrategyPool.user_id).where(
+            UserStrategy.strategy_id == STRATEGY_ID)):
+        symbols.update(pool.symbols)
+    return symbols
+
+
+def personal_run(session, user_id, run):
+    from dataclasses import replace
+    pool = session.get(StrategyPool, user_id)
+    if pool is None:
+        return run
+    symbols = {**run.symbols, **run.holding_symbols}
+    unscored = {**run.unscored, **run.holding_unscored}
+    requested = set(pool.symbols)
+    return replace(run, symbols={s: c for s, c in symbols.items() if s in requested},
+                   unscored={s: unscored.get(s, "not_loaded") for s in requested if s not in symbols},
+                   holding_symbols={s: c for s, c in symbols.items() if s not in requested})
 
 
 def portfolio_of(session: Session, user_id: str):
@@ -105,8 +123,8 @@ def portfolio_of(session: Session, user_id: str):
             symbol, exchange, currency = key, "US", "USD"
         holdings[key] = qs.Holding(symbol, float(shares * fraction), float(cost / shares) if shares else 0.0,
                                    currency, exchange)
-    cash = session.get(CashAccount, user_id)
-    return qs.Portfolio(holdings=holdings, cash=float(cash.balance * fraction) if cash else 0.0, currency=cash.currency if cash else "USD")
+    balance, currency = allocated_cash(session, user_id)
+    return qs.Portfolio(holdings=holdings, cash=float(balance), currency=currency)
 
 
 def _aware(value: datetime) -> datetime:
@@ -139,6 +157,7 @@ def cooldowns(session: Session, user_id: str) -> tuple[dict, dict]:
 def signals_for(session: Session, user_id: str, run, settings, now: datetime | None = None) -> dict:
     """Score ONE user from that user's own portfolio. The money to invest is the user's cash balance."""
     qs = load_library()
+    run = personal_run(session, user_id, run)
     portfolio = portfolio_of(session, user_id)
     deposit = portfolio.cash if portfolio.currency == "USD" else 0.0
     blocked, protected = cooldowns(session, user_id)
@@ -332,7 +351,7 @@ async def _deliver_pending(application) -> tuple[int, int]:
                     items = [(item_id, body) for item_id, body in items if item_id in eligible]
                 if not items:
                     break
-                text = (f"📈 <b>本月策略 1 建议</b>（资金权重 {fraction * 100:g}%）\n\n" + "\n\n".join(esc(t) for _, t in items) + "\n\n" + DISCLAIMER_HTML + "\n\n<i>用 /check 可按你当前的持仓重新查看。</i>")
+                text = (f"📈 <b>本月策略 1 建议</b>（资金权重 {fraction * 100:g}%）\n\n" + "\n\n".join(esc(t) for _, t in items) + "\n\n" + DISCLAIMER_HTML + "\n\n<i>用 /check1 可按你当前的持仓重新查看。</i>")
                 try:
                     await application.bot.send_message(telegram_id, text, parse_mode=ParseMode.HTML)
                     delivered = True
@@ -359,7 +378,7 @@ async def _deliver_pending(application) -> tuple[int, int]:
     return sent, failed
 
 
-# ---------------------------------------------------------------- freshness and the /check view
+# ---------------------------------------------------------------- freshness and the /check1 view
 
 FRESH_HOURS = 12
 RETRY_MINUTES = 30
@@ -381,34 +400,38 @@ def analysis_symbols(run) -> set[str]:
 def covers_holdings(session, user_id, row) -> bool:
     symbols = set(session.scalars(select(Position.symbol).where(
         Position.user_id == user_id, Position.currency == "USD", Position.exchange.in_(US_EXCHANGES))))
+    pool = session.get(StrategyPool, user_id)
+    if pool:
+        symbols.update(pool.symbols)
     return symbols <= analysis_symbols(result_of(row))
 
 
 def recent_attempt(session: Session, now: datetime | None = None) -> StrategyRun | None:
-    """A run of any status started in the last RETRY_MINUTES: /check does not start another one (protects the shared data feeds from repeated requests)."""
+    """A run of any status started in the last RETRY_MINUTES: /check1 does not start another one (protects the shared data feeds from repeated requests)."""
     since = _naive_utc(now or datetime.now(UTC)) - timedelta(minutes=RETRY_MINUTES)
     return session.scalar(select(StrategyRun).where(StrategyRun.started_at >= since).order_by(StrategyRun.started_at.desc()).limit(1))
 
 
 def check_text(session: Session, user_id: str, row: StrategyRun, settings, now: datetime | None = None, top: int = 10) -> str:
-    """What /check shows ONE user: the day's ranking (with that user's own D scores), the user's holdings, and the suggestions. Reads only that user's data."""
+    """What /check1 shows ONE user: the day's ranking (with that user's own D scores), the user's holdings, and the suggestions. Reads only that user's data."""
     from quant_strategy import config as qs_config
     from quant_strategy.signals import user_scores
 
-    run = result_of(row)
+    run = personal_run(session, user_id, result_of(row))
     portfolio = portfolio_of(session, user_id)
     held_values = {s: h.shares * run.prices.get(s, h.avg_price) for s, h in portfolio.holdings.items() if h.currency == "USD"}
     scores = user_scores(run, held_values)
     data = signals_for(session, user_id, run, settings, now)
     allocation = allocation_fraction(session, user_id) * 100
-    return (f"策略 1：月度定投个股(加强型 QQQ) · 资金权重 {allocation:g}%\n" +
+    label = "独立现金分配" if cash_budgets(session, user_id) else f"资金权重 {allocation:g}%"
+    return (f"策略 1：月度定投个股(加强型 QQQ) · {label}\n" +
             render_check(run, scores, held_values, data, qs_config.STRATEGY["min_buy_score"]))
 
 
 # ---------------------------------------------------------------- orchestration
 
 async def refresh_run(application, *, force: bool = False) -> dict:
-    """The shared run only (no notifications): used by /check and by the monthly push. Raises StrategyUnavailable if one is already running."""
+    """The shared run only (no notifications): used by /check1 and by the monthly push. Raises StrategyUnavailable if one is already running."""
     lock = application.bot_data.setdefault("strategy_lock", asyncio.Lock())
     if lock.locked():
         raise StrategyUnavailable("已有一次策略运行正在进行。")

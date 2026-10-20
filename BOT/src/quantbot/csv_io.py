@@ -8,6 +8,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
+from .allocations import cash_budgets, set_strategy_cash
 from .display import plain
 from .models import User
 from .services import (
@@ -17,7 +18,7 @@ from .services import (
     normalize_symbol,
 )
 
-MONEY_RE = re.compile(r"^\s*([^\s]+)\s+([A-Za-z]{3})\s*$")
+MONEY_RE = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z]{3})\s*$")
 
 
 @dataclass(frozen=True)
@@ -37,19 +38,32 @@ def import_portfolio_csv(session: Session, user: User, content: str, *, actor: i
                          replace: bool = False) -> ImportResult:
     reader = csv.DictReader(io.StringIO(content.lstrip("\ufeff")))
     required = {"Company", "Shares Held", "Average Price"}
-    if set(reader.fieldnames or ()) != required:
+    if len(reader.fieldnames or ()) != 3 or set(reader.fieldnames or ()) != required:
         raise ValueError("CSV header must be Company,Shares Held,Average Price")
     service = PortfolioService()
     parsed_positions: list[tuple[str, Decimal, Decimal, str]] = []
-    cash_row: tuple[Decimal, str] | None = None
+    cash_rows = {}
     seen: set[str] = set()
     for line_no, row in enumerate(reader, start=2):
+        if None in row or any(value is None for value in row.values()):
+            raise ValueError(f"line {line_no}: 每行必须恰有三列")
         company = (row["Company"] or "").strip()
-        if company.lower() == "current_cash":
-            if cash_row is not None:
-                raise ValueError("CSV contains multiple current_cash rows")
-            amount, currency = _money(row["Average Price"])           # the second column of this row is ignored: whatever is written there makes no difference
-            cash_row = (amount, currency)
+        stock_cash = company.upper() == "STOCK:CASH"
+        if stock_cash:
+            company = "CASH"
+        if not stock_cash and company.lower() in {"current_cash", "cash"}:
+            number = 0
+            if company.lower() == "cash":
+                value = (row["Shares Held"] or "").strip()
+                if not re.fullmatch(r"[0-9]{1,4}", value):
+                    raise ValueError(f"line {line_no}: CASH 第二列须为策略编号，0 表示公共现金")
+                number = int(value)
+            if number in cash_rows:
+                raise ValueError("CSV contains multiple cash rows for the same strategy")
+            amount, currency = _money(row["Average Price"])
+            if number and currency != "USD":
+                raise ValueError("独立策略现金只接受 USD")
+            cash_rows[number] = (amount, currency)
             continue
         symbol = normalize_symbol(company)
         if symbol in seen:
@@ -59,6 +73,8 @@ def import_portfolio_csv(session: Session, user: User, content: str, *, actor: i
         cost, currency = _money(row["Average Price"])
         parsed_positions.append((symbol, shares, cost, currency))
 
+    if 0 in cash_rows and len(cash_rows) != 1:
+        raise ValueError("CASH 0 必须是唯一现金行，不能与 CASH 1、2、3 混用")
     existing = {p.symbol: p for p in service.list_positions(session, user.id)}
     if not replace and any(symbol in existing for symbol, *_ in parsed_positions):
         raise ValueError("CSV contains positions that already exist; use replace mode")
@@ -67,10 +83,9 @@ def import_portfolio_csv(session: Session, user: User, content: str, *, actor: i
             service.remove_position(session, user, position.symbol, position.exchange, actor=actor)
     for symbol, shares, cost, currency in parsed_positions:
         service.add_position(session, user, symbol, shares, cost, currency, actor=actor)
-    if cash_row:
-        amount, currency = cash_row
-        service.set_cash(session, user, amount, currency, actor=actor)
-    return ImportResult(len(parsed_positions), cash_row is not None)
+    for number, (amount, currency) in cash_rows.items():
+        set_strategy_cash(session, user, number, amount, currency, actor=actor)
+    return ImportResult(len(parsed_positions), bool(cash_rows))
 
 
 def export_portfolio_csv(session: Session, user: User) -> str:
@@ -79,9 +94,15 @@ def export_portfolio_csv(session: Session, user: User) -> str:
     writer = csv.writer(output, lineterminator="\n")
     writer.writerow(["Company", "Shares Held", "Average Price"])
     cash = service.cash(session, user.id)
-    writer.writerow(["current_cash", 0,
-                     f"{plain(cash.balance, 2, 8)} {cash.currency}"])
+    budgets = cash_budgets(session, user.id)
+    if budgets:
+        for row in budgets:
+            writer.writerow(["CASH", row.strategy_id.removeprefix("strategy"),
+                             f"{plain(row.balance, 2, 8)} USD"])
+    else:
+        writer.writerow(["CASH", 0, f"{plain(cash.balance, 2, 8)} {cash.currency}"])
     for position in service.list_positions(session, user.id):
-        writer.writerow([position.symbol, plain(position.shares, 0, 10),
+        company = "STOCK:CASH" if position.symbol == "CASH" else position.symbol
+        writer.writerow([company, plain(position.shares, 0, 10),
                          f"{plain(position.average_cost, 2, 8)} {position.currency}"])
     return output.getvalue()

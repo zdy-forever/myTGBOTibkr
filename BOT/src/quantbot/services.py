@@ -427,6 +427,8 @@ class PortfolioService:
     def _audit(session: Session, user_id: str, kind: TransactionType, actor: int,
                symbol: str | None, exchange: str | None, before: dict | None, after: dict | None,
                idempotency_key: str | None = None) -> None:
+        from .allocations import invalidate_suggestions
+        invalidate_suggestions(session, user_id)
         session.add(Transaction(user_id=user_id, type=kind, symbol=symbol, exchange=exchange,
                                 before_data=before, after_data=after,
                                 actor_telegram_id=actor, idempotency_key=idempotency_key))

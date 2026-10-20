@@ -38,7 +38,9 @@ from telegram.ext import (
     filters,
 )
 
-from .allocations import allocation_fraction, parse_weights, save_weights, selections
+from .allocations import allocation_fraction, cash_budgets, parse_weights, save_weights, selections
+from .strategy_commands import (check_two, parse_pool_change, plain_cash, pool_command, save_cash_text,
+                                strategy_callback, strategy_keyboard, strategy_two_off)
 from .announcements import publish_announcement
 from .chat import (
     create_message,
@@ -55,6 +57,7 @@ from .help_text import (
     QUICK_NEW,
     QUICK_PENDING,
     STRATEGY1_WELCOME,
+    STRATEGY2_WELCOME,
     STRATEGY_PICK,
     TOPICS,
     help_for,
@@ -80,7 +83,6 @@ from .services import (
     PortfolioService,
     normalize_exchange,
     normalize_symbol,
-    parse_money_text,
     system_stats,
 )
 from .strategy_text import render_cooldowns
@@ -111,12 +113,15 @@ _REGISTERED_MENU = _PUBLIC_MENU + [("subscribe", "查看或开通订阅"),
 _STRATEGY_MENU = _REGISTERED_MENU + [
     ("strategy_weights", "查看或分配策略资金权重"),
     ("strategy", "策略管理：启停与资金权重"), ("strategy1", "选择策略 1：月度定投个股(加强型 QQQ)"),
-    ("strategy2", "策略 2：研发中")]
+    ("strategy2", "启用策略 2：G2 趋势 ETF 轮动")]
 _PREMIUM_MENU = _REGISTERED_MENU + [
     ("strategy_weights", "查看或分配策略资金权重"),
     ("strategy", "策略管理：启停与资金权重"), ("strategy1", "选择策略 1：月度定投个股(加强型 QQQ)"),
-    ("strategy1_off", "停用策略 1"), ("strategy2", "策略 2：研发中"),
-    ("check", "查看策略建议"), ("portfolio", "查看我的持仓"),
+    ("strategy1_off", "停用策略 1"), ("strategy2", "启用策略 2：G2 趋势 ETF 轮动"),
+    ("strategy2_off", "停用策略 2"), ("check2", "仅检查策略 2：趋势与操作"),
+    ("strategy1_pool", "修改策略 1 股票池"),
+    ("check", "检查全部已启用策略"), ("check1", "仅检查策略 1：排名与建议"),
+    ("portfolio", "查看我的持仓"),
     ("add", "添加持仓"), ("edit", "修改持仓"), ("remove", "删除持仓"),
     ("cash", "修改现金"), ("import", "导入 CSV"), ("export", "导出 CSV"),
     ("history", "查看操作记录"), ("cooldown", "查看冷却股票"),
@@ -134,11 +139,21 @@ _ADMIN_MENU = _PREMIUM_MENU + [
     ("health", "检查运行状态"), ("runstrategy", "立即运行策略")]
 
 
-def _menu_for(status: str) -> list[BotCommand]:
+def _menu_for(status: str, enabled: set[str] | None = None) -> list[BotCommand]:
     items = (_ADMIN_MENU if status == "admin" else _PREMIUM_MENU if status in {"paid", "whitelist"}
              else _STRATEGY_MENU + _ADMIN_MENU[len(_PREMIUM_MENU):] if status == "admin_strategy_required"
              else _STRATEGY_MENU if status == "strategy_required"
              else _REGISTERED_MENU if status == "subscription_required" else _PUBLIC_MENU)
+    if enabled is not None:
+        s1_only = {"strategy1_off", "signals", "cooldown", "auto_notice_date", "strategy1_pool"}
+        s2_only = {"strategy2_off"}
+        items = [(c, d) for c, d in items if
+                 ("strategy1" in enabled or c not in s1_only) and
+                 ("strategy2" in enabled or c not in s2_only) and
+                 (bool(enabled) or c != "check")]
+        items = [(c, f"仅检查策略 {c[-1]}（需先启用）"
+                  if c in {"check1", "check2"} and f"strategy{c[-1]}" not in enabled else d)
+                 for c, d in items]
     return [BotCommand(command, description) for command, description in items]
 
 
@@ -150,7 +165,7 @@ def _ui_status(session, accounts: AccountService, telegram_id: int) -> str:
     status = accounts.access_status(session, telegram_id)
     if status in {"admin", "whitelist", "paid"}:
         user = accounts.by_telegram(session, telegram_id)
-        if user is None or session.get(UserStrategy, (user.id, "strategy1")) is None:
+        if user is None or not _enabled_strategies(session, user.id):
             return "admin_strategy_required" if status == "admin" else "strategy_required"
     return status
 
@@ -161,8 +176,10 @@ async def _refresh_user_menu(application, telegram_id: int) -> None:
         return
     with transaction(application.bot_data["session_factory"]) as session:
         status = _ui_status(session, application.bot_data["accounts"], telegram_id)
+        user = application.bot_data["accounts"].by_telegram(session, telegram_id)
+        enabled = _enabled_strategies(session, user.id) if user else set()
     try:
-        await setter(_menu_for(status), scope=BotCommandScopeChat(telegram_id))
+        await setter(_menu_for(status, enabled), scope=BotCommandScopeChat(telegram_id))
     except TelegramError:
         log.warning("could not refresh command menu for user %s", telegram_id, exc_info=True)
 
@@ -217,7 +234,7 @@ async def authorization_gate(update: Update, context: ContextTypes.DEFAULT_TYPE)
     with transaction(context.application.bot_data["session_factory"]) as session:
         status = accounts.access_status(session, update.effective_user.id)
         user = accounts.by_telegram(session, update.effective_user.id)
-        enabled_strategy1 = bool(user and session.get(UserStrategy, (user.id, "strategy1")))
+        enabled = _enabled_strategies(session, user.id) if user else set()
     words = (update.message.text or "").split(maxsplit=1) if update.message else []
     command = words[0].split("@", 1)[0].lower() if words else ""
     if command.startswith("/") and command != "/cancel":
@@ -250,13 +267,17 @@ async def authorization_gate(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 not command.startswith("/") and not update.callback_query and
                 (f"/{pending}" in ADMIN_COMMANDS or "announcement_important" in data or data.get("chat_reply_id"))):
             return
-    if premium and enabled_strategy1:
+    required = {"/check1": "strategy1", "/signals": "strategy1", "/cooldown": "strategy1",
+                "/auto_notice_date": "strategy1", "/strategy1_pool": "strategy1", "/check2": "strategy2"}
+    pending = (getattr(context, "user_data", {}) or {}).get("pending_command_args", (None,))[0]
+    needed = required.get(command) or (required.get("/" + pending) if pending and not command.startswith("/") else None)
+    if premium and enabled and (needed is None or needed in enabled):
         return
     allowed = {"/start", "/help", "/help_import", "/help_faq", "/privacy", "/cancel"}
     if status != "unregistered":
         allowed.update({"/subscribe", "/unbind", "/chat"})
         if premium:
-            allowed.update({"/strategy", "/strategy1", "/strategy1_off", "/strategy2", "/strategy_weights"})
+            allowed.update({"/strategy", "/strategy1", "/strategy1_off", "/strategy2", "/strategy2_off", "/strategy_weights", "/cash"})
         if message and getattr(message, "successful_payment", None):
             return
         if update.callback_query and (update.callback_query.data or "").startswith("unbind:"):
@@ -267,20 +288,25 @@ async def authorization_gate(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     if command in allowed:
         return
+    if premium and (command == "cash" or (update.callback_query and (update.callback_query.data or "").startswith("strategy:"))):
+        return
     if not command.startswith("/") and (getattr(context, "user_data", {}) or {}).get("pending_command_args", (None,))[0] == "help":
         return
-    if premium and not command.startswith("/") and (getattr(context, "user_data", {}) or {}).get("pending_command_args", (None,))[0] == "strategy_weights":
+    if premium and not command.startswith("/") and ((getattr(context, "user_data", {}) or {}).get("pending_command_args", (None,))[0] == "strategy_weights"
+                                                  or context.user_data.get("cash_input")):
         return
     if status == "subscription_required" or premium:
         await _refresh_user_menu(context.application, update.effective_user.id)
+    strategy_prompt = (f"此功能属于策略 {needed[-1]}，请先启用 /{needed}。用 /help 查看说明。"
+                       if needed else "请先启用至少一个策略，用 /strategy 查看可用策略。")
     if update.callback_query:
         await update.callback_query.answer("请先验证手机号。" if status == "unregistered" else
                                            "请先开通 Premium。" if not premium else
-                                           "此功能属于策略 1，请先发送 /strategy1 启用。", show_alert=True)
+                                           strategy_prompt, show_alert=True)
     elif message:
         await message.reply_text("请先使用 /start 验证本人的 Telegram 手机号。" if status == "unregistered" else
                                  SUBSCRIPTION_OFFER if not premium else
-                                 "此功能属于策略 1，请先启用 /strategy1。用 /help 查看当前已启用策略的说明。")
+                                 strategy_prompt)
     raise ApplicationHandlerStop
 
 
@@ -847,7 +873,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         for page in help_pages(enabled, admin=status == "admin"):
             await update.message.reply_text(page, parse_mode=ParseMode.HTML)
         return
-    if status in {"admin", "whitelist", "paid"} and context.args and "strategy1" not in enabled:
+    if status in {"admin", "whitelist", "paid"} and context.args and "strategy1" not in enabled and context.args[0].lower() not in {"导入", "csv", "import"}:
         if context.args[0].lower() in {"问题", "faq"}:
             await update.message.reply_text(COMMON_FAQ, parse_mode=ParseMode.HTML)
         else:
@@ -860,13 +886,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
-def _require(session, update, context, *, allow_unselected: bool = False):
+def _require(session, update, context, *, allow_unselected: bool = False, strategy_id=None):
     accounts = context.application.bot_data["accounts"]
     user = accounts.require(session, update.effective_user.id)
     if context.application.bot_data.get("enforce_premium") and not accounts.has_premium_access(session, update.effective_user.id):
         raise PermissionError("Premium access required")
-    if not allow_unselected and session.get(UserStrategy, (user.id, "strategy1")) is None:
-        raise PermissionError("Strategy selection required")
+    if strategy_id and session.get(UserStrategy, (user.id, strategy_id)) is None:
+        raise PermissionError("请先启用对应策略。")
+    if not allow_unselected and not _enabled_strategies(session, user.id):
+        raise PermissionError("请先用 /strategy 启用策略。")
     return user
 
 
@@ -885,7 +913,7 @@ async def portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             user = _require(session, update, context)
             cash = portfolios.cash(session, user.id)
             positions = portfolios.list_positions(session, user.id)
-            pages = render_portfolio_pages(cash, positions)
+            pages = render_portfolio_pages(cash, positions) + _budget_pages(session, user.id)
             account_id = user.id
     except PermissionError:
         await update.message.reply_text("请先使用 /start 注册。")
@@ -895,6 +923,17 @@ async def portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.message.reply_text(pages[page - 1], parse_mode=ParseMode.HTML,
                                     reply_markup=_portfolio_navigation(account_id, page, len(pages)))
+
+
+def _budget_pages(session, user_id):
+    rows = cash_budgets(session, user_id)
+    pages = []
+    for start in range(0, len(rows), 30):
+        lines = ["💰 <b>独立策略现金</b>（原始现金合计见持仓页）"]
+        lines += [f"策略 {r.strategy_id.removeprefix('strategy')}：${r.balance:,.2f}" for r in rows[start:start + 30]]
+        lines += ["CASH 编号 金额USD 替换该项；CASH 0 总金额USD 切回公共现金。", "/strategy 查看分配状态。"]
+        pages.append("\n".join(lines))
+    return pages
 
 
 def _portfolio_navigation(account_id: str, page: int, total: int) -> InlineKeyboardMarkup | None:
@@ -925,7 +964,7 @@ async def portfolio_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         portfolios = PortfolioService()
         pages = render_portfolio_pages(portfolios.cash(session, user.id),
-                                       portfolios.list_positions(session, user.id))
+                                       portfolios.list_positions(session, user.id)) + _budget_pages(session, user.id)
         account_id = user.id
     page = int(match.group(2))
     if page > len(pages):
@@ -1079,27 +1118,31 @@ async def sale_cooldown_confirm(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def cash_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("请输入当前可投资现金余额，例如：1000 USD（也可以写 1000usd、$1000、1,000.5 美元；不写币种按美元）。这会替换原余额，不是充值，也不是在原余额上累加；不要包含股票市值。策略只分析美元金额。取消请发 /cancel。")
+    context.user_data["cash_input"] = True
+    if context.args:
+        try:
+            await save_cash_text(update, context, " ".join(context.args))
+            context.user_data.pop("cash_input", None)
+            return ConversationHandler.END
+        except ValueError as exc:
+            await update.message.reply_text(str(exc))
+    await update.message.reply_text("请输入：1 200USD（策略 1）、2 300USD（策略 2），或 0 500USD（公共现金，清除独立金额后可按比例分配）。也可随时发送 CASH 1 200USD。金额会替换余额，不是充值。/cancel 取消。")
     return CASH_DATA
 
 
 async def cash_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
-        amount, currency = parse_money_text(update.message.text)
-    except ValueError:
-        await update.message.reply_text("没看懂这个金额。请这样输入：1000 USD（也可以写 1000usd、$1000、1,000.5 美元）。取消请发 /cancel。")
+        await save_cash_text(update, context, update.message.text)
+    except ValueError as exc:
+        await update.message.reply_text(str(exc) + "\n例如：1 200USD；0 1000USD。/cancel 取消。")
         return CASH_DATA
-    with transaction(context.application.bot_data["session_factory"]) as session:
-        user = _require(session, update, context)
-        PortfolioService().set_cash(session, user, amount, currency, actor=update.effective_user.id)
-    note = "" if currency == "USD" else "\n注意：策略只分析美元金额，其他币种的现金不会参与建议。"
-    await update.message.reply_text(f"现金已更新为 {amount:,.2f} {currency}。{note}")
+    context.user_data.pop("cash_input", None)
     return ConversationHandler.END
 
 
 async def import_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["await_csv"] = True
-    await update.message.reply_text("请发送 UTF-8 CSV 文件（不超过 1 MB），格式见 /help_import。现有同名持仓不会被覆盖；文件中包含已有股票会拒绝整次导入。current_cash 行会替换现金余额。取消请发 /cancel。")
+    await update.message.reply_text("请发送 UTF-8 CSV 文件（不超过 1 MB），格式见 /help_import。现有同名持仓不会被覆盖；文件中包含已有股票会拒绝整次导入。CASH 行按编号替换现金；CASH 0 必须是唯一现金行。取消请发 /cancel。")
 
 
 async def csv_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1145,17 +1188,24 @@ async def strategy_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         rows = selections(session, user.id)
         weights = {row.strategy_id: row.weight_percent for row in rows}
         try:
-            allocation_fraction(session, user.id, rows[0].strategy_id if rows else "strategy1")
+            if not rows:
+                raise ValueError("请先启用策略")
+            for selected in rows:
+                allocation_fraction(session, user.id, selected.strategy_id)
             valid = True
         except ValueError:
             valid = False
-    await update.message.reply_text(strategy_management_text(weights, valid))
+        budgets = {r.strategy_id: r.balance for r in cash_budgets(session, user.id)}
+    await update.message.reply_text(strategy_management_text(weights, valid, budgets),
+                                    reply_markup=strategy_keyboard(set(weights)))
 
 
 async def strategy_weights(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         with transaction(context.application.bot_data["session_factory"]) as session:
             user = _require(session, update, context, allow_unselected=True)
+            if cash_budgets(session, user.id):
+                raise ValueError("当前为独立金额模式，比例设置暂停。先发送 CASH 0 总现金USD 替换全部独立现金，才可设置比例。")
             if context.args:
                 save_weights(session, user.id, parse_weights(context.args))
                 session.flush()
@@ -1172,7 +1222,7 @@ async def strategy_weights(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     await update.message.reply_text("📊 策略资金权重\n" + ("\n".join(lines) or "尚未启用策略，请先 /strategy。") +
                                     "\n\n" + status + "\n按持仓市值与现金的合计分配，每项大于 0，总和为 100%。"
-                                    "目前只有策略 1 可用，填写 1=100。未来多策略示例：1=60 2=40。"
+                                    "单策略示例：1=100；双策略：1=60 2=40。仅公共现金（CASH 0）模式可用。"
                                     "权重用于计算建议，不会替你转账或下单；修改不会补发已处理月份的通知。\n/strategy　返回策略管理")
 
 
@@ -1211,11 +1261,46 @@ async def strategy_two(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("/strategy2 不需要参数，请单独发送。")
         return
     with transaction(context.application.bot_data["session_factory"]) as session:
-        _require(session, update, context, allow_unselected=True)
-    await update.message.reply_text("策略 2 正在研发中，暂不可选。你当前的策略没有改变。\n/strategy　返回策略管理")
+        user = _require(session, update, context, allow_unselected=True)
+        if session.get(UserStrategy, (user.id, "strategy2")) is None:
+            session.add(UserStrategy(user_id=user.id, strategy_id="strategy2"))
+    await _refresh_user_menu(context.application, update.effective_user.id)
+    await update.message.reply_text("✅ 已启用策略 2。\n\n" + STRATEGY2_WELCOME, parse_mode=ParseMode.HTML)
 
 
 async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Check every enabled strategy independently, in a stable order."""
+    try:
+        with transaction(context.application.bot_data["session_factory"]) as session:
+            user = _require(session, update, context, allow_unselected=True)
+            enabled = _enabled_strategies(session, user.id)
+    except PermissionError:
+        await update.message.reply_text("请先 /start 验证身份，并确认 Premium 有效。")
+        return
+    if not enabled:
+        await update.message.reply_text("尚未启用策略，请先用 /strategy 选择策略。")
+        return
+    handlers = {"strategy1": check_one, "strategy2": check_two}
+    await update.message.reply_text(
+        "正在依次检查所有已启用策略，各策略结果会分别发送；需要后台更新的结果会在完成后补发。")
+    for strategy_id in sorted(enabled):
+        handler = handlers.get(strategy_id)
+        if handler is None:
+            await update.message.reply_text("有一项已启用策略暂不支持检查，请用 /strategy 查看或联系管理员。")
+            continue
+        try:
+            if strategy_id == "strategy2":
+                await handler(update, context, show_progress=False)
+            else:
+                await handler(update, context)
+        except Exception:
+            log.exception("manual strategy check failed: %s", strategy_id)
+            number = strategy_id.removeprefix("strategy")
+            await update.message.reply_text(
+                f"策略 {number} 检查失败，请稍后用 /check{number} 重试；其他策略会继续检查。")
+
+
+async def check_one(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Today's scores and suggestions for the CALLER only (own portfolio, own D scores). If the shared data is older than 12 hours it is shown with a notice while a refresh runs in the
     background; the caller then gets the fresh result automatically. Suggestions only: nothing is ordered."""
     from . import strategy_service as strategy
@@ -1223,7 +1308,7 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     app = context.application
     try:
         with transaction(app.bot_data["session_factory"]) as session:
-            user = _require(session, update, context)
+            user = _require(session, update, context, strategy_id="strategy1")
             allocation_fraction(session, user.id)
             settings = strategy.strategy_settings()
             row = strategy.latest_completed(session)
@@ -1232,17 +1317,17 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             recent = None if fresh else strategy.recent_attempt(session)
             user_id = user.id
     except PermissionError:
-        await update.message.reply_text("请先使用 /start 注册。")
+        await update.message.reply_text("策略 1 · 请先 /start 验证身份，确认 Premium 有效并启用 /strategy1。")
         return
     except (strategy.StrategyUnavailable, ValueError) as exc:
-        await update.message.reply_text(str(exc))
+        await update.message.reply_text("策略 1 · " + str(exc))
         return
     if fresh:
         await update.message.reply_text(text, parse_mode=ParseMode.HTML)
         return
-    notice = ("\n\n⏳ 以上数据不是最新的，正在后台更新（首次可能要几分钟），完成后会自动把最新结果发给你。" if text else "⏳ 还没有可用的数据，正在生成（首次可能要几分钟），完成后会自动发给你。")
+    notice = ("\n\n⏳ 策略 1 · 以上数据不是最新的，正在后台更新（首次可能要几分钟），完成后会自动把最新结果发给你。" if text else "⏳ 策略 1 · 还没有可用的数据，正在生成（首次可能要几分钟），完成后会自动发给你。")
     if recent is not None and not app.bot_data.get("check_job_running"):
-        await update.message.reply_text((text + "\n\n" if text else "") + "刚刚有一次更新尝试，请 30 分钟后再用 /check。", parse_mode=ParseMode.HTML)
+        await update.message.reply_text((text + "\n\n" if text else "") + "策略 1 · 刚刚有一次更新尝试，请 30 分钟后再用 /check1。", parse_mode=ParseMode.HTML)
         return
     app.bot_data.setdefault("check_waiters", {})[user_id] = update.effective_user.id
     await update.message.reply_text(text + notice, parse_mode=ParseMode.HTML)
@@ -1277,7 +1362,7 @@ async def _check_refresh_job(application) -> None:
                             not application.bot_data["accounts"].has_premium_access(session, telegram_id)):
                         continue
                 if failure:
-                    text = "策略 1 · " + failure + "\n稍后可以再用 /check。"
+                    text = "策略 1 · " + failure + "\n稍后可以再用 /check1。"
                 else:
                     with transaction(factory) as session:
                         row = strategy.latest_completed(session)
@@ -1289,7 +1374,7 @@ async def _check_refresh_job(application) -> None:
         application.bot_data["check_job_running"] = False
 
 
-signals = check
+signals = check_one
 
 
 async def cooldown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1298,7 +1383,7 @@ async def cooldown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     try:
         with transaction(context.application.bot_data["session_factory"]) as session:
-            user = _require(session, update, context)
+            user = _require(session, update, context, strategy_id="strategy1")
             blocked, protected = strategy.cooldowns(session, user.id)
     except PermissionError:
         await update.message.reply_text("请先使用 /start 注册。")
@@ -1322,9 +1407,13 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             setattr(prefs, field, not getattr(prefs, field))
         schedule = ("每月随机一个美股交易日" if prefs.auto_notice_day == 0 else
                     f"每月第 {prefs.auto_notice_day} 个美股交易日")
-        text = (f"🔔 <b>通知设置</b>\n策略 1 每月推送：{'开 ✅' if prefs.signals_enabled else '关 ⛔'}\n公告通知（账户通用）：{'开 ✅' if prefs.announcements_enabled else '关 ⛔'}\n\n"
-                f"自动通知日期：{schedule}\n\n"
-                "切换：/settings signals 或 /settings announcements\n修改日期：/auto_notice_date 5；随机：/auto_notice_date random")
+        enabled = _enabled_strategies(session, user.id)
+        text = (f"🔔 <b>通知设置</b>\n已启用策略的每日报告与操作提醒：{'开 ✅' if prefs.signals_enabled else '关 ⛔'}\n公告通知（账户通用）：{'开 ✅' if prefs.announcements_enabled else '关 ⛔'}\n\n"
+                "切换：/settings signals 或 /settings announcements")
+        if "strategy1" in enabled:
+            text += f"\n策略 1 月度买入提醒：{schedule}\n/auto_notice_date 5；随机：/auto_notice_date random"
+        tz, hour = context.application.bot_data.get("strategy_push", ("Asia/Shanghai", 10))
+        text += f"\n每日盘前检查：{hour:02}:00（{html.escape(tz)}），休市日跳过；无操作也会出报告。"
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
@@ -1485,7 +1574,7 @@ async def auto_notice_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         tz, hour = app.bot_data.get("strategy_push", strategy.DEFAULT_PUSH)
         today = datetime.now(ZoneInfo(tz)).date()
         with transaction(app.bot_data["session_factory"]) as session:
-            user = _require(session, update, context)
+            user = _require(session, update, context, strategy_id="strategy1")
             prefs = session.get(NotificationPreference, user.id)
             if day is not None:
                 if day == 0 and prefs.auto_notice_day != 0:
@@ -1630,7 +1719,7 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         last = strategy.latest_completed(session)
         last_text = f"最近一次完成的策略 1 运行：{last.started_at:%Y-%m-%d %H:%M} UTC，行情日期 {last.trading_date}。" if last else "还没有完成的策略 1 运行。"
-    await update.message.reply_text("OK：Telegram 与数据库可用。" + last_text + ("策略每月自动运行已开启。" if context.application.bot_data.get("strategy_autorun") else "策略自动运行未开启（用 /runstrategy 手动运行）。"))
+    await update.message.reply_text("OK：Telegram 与数据库可用。" + last_text + ("策略 1、2 每日交易日盘前报告已开启。" if context.application.bot_data.get("strategy_autorun") else "策略自动运行未开启（用 /runstrategy 手动运行）。"))
 
 
 async def run_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1674,7 +1763,8 @@ _STAGED_REQUIRED = {
     "admin_remove": "请输入：(用户ID) 或 +(国家区号) (手机号)",
 }
 _STAGED_OPTIONAL = {
-    "strategy_weights": "回复所有已启用策略的权重，例如 1=100；多策略示例 1=60 2=40（策略 2 尚未开放）",
+    "strategy1_pool": "回复 + AAPL MSFT 添加股票，或 - AAPL MSFT 移除股票",
+    "strategy_weights": "回复所有已启用策略的权重，例如 1=100；多策略示例 1=60 2=40（仅公共现金模式可用）",
     "whitelist_list": "回复页码可查看其他页",
     "admin_list": "回复页码可查看其他页",
     "portfolio": "回复页码可查看其他页",
@@ -1685,8 +1775,10 @@ _STAGED_OPTIONAL = {
 
 
 def _validate_command_args(command: str, args: list[str]) -> None:
-    if len(args) > 24:
+    if len(args) > (61 if command == "strategy1_pool" else 24):
         raise ValueError("参数过长。")
+    if command == "strategy1_pool":
+        parse_pool_change(args)
     if command == "strategy_weights":
         parse_weights(args)
     elif command.startswith("whitelist_") and command != "whitelist_list":
@@ -1768,6 +1860,7 @@ async def _staged_command_dispatch(update: Update, context: ContextTypes.DEFAULT
 
 
 _STAGED_HANDLERS = {
+    "strategy1_pool": pool_command,
     "strategy_weights": strategy_weights,
     "whitelist_add": whitelist_add, "whitelist_show": whitelist_show,
     "whitelist_edit": whitelist_edit, "whitelist_remove": whitelist_remove,
@@ -1813,6 +1906,7 @@ def _conversation_callback(callback, *, entry: bool = False):
 def configure_application(application: Application, accounts: AccountService, factory) -> Application:
     application.bot_data.update(accounts=accounts, session_factory=factory, enforce_premium=True)
     application.add_handler(TypeHandler(Update, authorization_gate), group=-2)
+    application.add_handler(MessageHandler(filters.Regex(r"(?i)^CASH(?:\s|$)"), plain_cash), group=-1)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _staged_command_dispatch), group=-1)
     cancel_handler = CommandHandler("cancel", cancel)
     command_handlers = {command: _staged_command_entry for command in _STAGED_HANDLERS}
@@ -1859,12 +1953,14 @@ def configure_application(application: Application, accounts: AccountService, fa
                              ("whitelist_remove", whitelist_remove),
                              ("strategy", strategy_command), ("strategy1", strategy_one),
                              ("strategy1_off", strategy_one_off), ("strategy2", strategy_two),
+                             ("strategy2_off", strategy_two_off), ("check1", check_one), ("check2", check_two),
                              ("portfolio", portfolio), ("import", import_start), ("export", export_command), ("history", history), ("check", check), ("signals", signals), ("cooldown", cooldown), ("unbind", unbind_start), ("help_import", help_import), ("help_faq", help_faq), ("settings", settings), ("users", users_command), ("stats", stats_command), ("health", health), ("runstrategy", run_strategy)]:
         if command not in _STAGED_HANDLERS:
             command_handlers[command] = handler
             application.add_handler(CommandHandler(command, handler))
     application.add_handler(PreCheckoutQueryHandler(pre_checkout))
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+    application.add_handler(CallbackQueryHandler(strategy_callback, pattern=r"^strategy:"))
     application.add_handler(CallbackQueryHandler(unbind_confirm, pattern=r"^unbind:"))
     application.add_handler(CallbackQueryHandler(portfolio_page, pattern=r"^portfolio:"))
     application.add_handler(CallbackQueryHandler(sale_cooldown_confirm, pattern=r"^sale-cooldown:\d+:(yes|no)$"))
@@ -1872,9 +1968,10 @@ def configure_application(application: Application, accounts: AccountService, fa
     application.add_error_handler(_error)
     if application.job_queue:
         from .chat import maintain_chat_messages
-        from .strategy_service import monthly_tick, retry_pending_notifications
+        from .strategy_service import retry_pending_notifications
+        from .daily_service import daily_tick
 
-        application.job_queue.run_repeating(monthly_tick, interval=3600, first=120, name="monthly-strategy")
+        application.job_queue.run_repeating(daily_tick, interval=300, first=120, name="daily-strategies")
         application.job_queue.run_repeating(retry_pending_notifications, interval=3600, first=60,
                                             name="strategy-notification-retry")
         application.job_queue.run_repeating(maintain_chat_messages, interval=3600, first=90,

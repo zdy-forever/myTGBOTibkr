@@ -1,0 +1,164 @@
+{
+  "status": "frozen_by_user",
+  "frozen_at": "2026-10-20T05:39:29.199461+00:00",
+  "active_rule": "G2 current default with audited V5 execution",
+  "decision": "Preserve the currently active default rules; archive research without adopting new variants.",
+  "gpiq_minimum_target_weight": 0.2,
+  "sideways_asset": "GPIQ",
+  "down_asset": "SGOV",
+  "strong_down_asset": "SGOV",
+  "strong_up_asset": "TQQQ",
+  "strong_up_rule": "ALL_UP",
+  "adopted_research_variants": [],
+  "research_only": [
+    "GLD/IEF down-only rotation R_b32bc4b83",
+    "QQQT/QQQY/QLDY and other income replacements",
+    "GPIQ floor removal",
+    "cash-release allocation"
+  ],
+  "execution": "Historical nominal integer shares; split-aware; ex-date dividend receivables; payable-date EOD cash; prior-price volatility warmup; first-day TWR included.",
+  "deployment_performed": false,
+  "final_holdout_unlocked": false,
+  "default_cfg_snapshot": {
+    "V5_STRONG_UP_ASSET": "TQQQ",
+    "V5_DOWN_ASSET": "SGOV",
+    "V5_STRONG_DOWN_ASSET": "SGOV",
+    "PERIODS": {
+      "DEV_EARLY": [
+        [
+          2016,
+          1,
+          4
+        ],
+        [
+          2019,
+          12,
+          31
+        ]
+      ],
+      "DEV_RECENT": [
+        [
+          2023,
+          10,
+          30
+        ],
+        [
+          2026,
+          10,
+          16
+        ]
+      ],
+      "FINAL_HOLDOUT": [
+        [
+          2020,
+          1,
+          2
+        ],
+        [
+          2022,
+          12,
+          30
+        ]
+      ]
+    },
+    "STARTING_CASH_USD": 10000,
+    "MONTHLY_DEPOSIT_USD": 200,
+    "SLIPPAGE_PER_SIDE": 0.0005,
+    "ANNUAL_RF_ASSUMPTION": 0.04,
+    "V5_CASH_BUFFER": 0.0,
+    "GPIQ_AVAILABLE_FROM": [
+      2023,
+      11,
+      1
+    ],
+    "V5_NDX_TICKER": "QQQM",
+    "V5_PROXIES": {
+      "GPIQ": [
+        [
+          2023,
+          11,
+          1
+        ],
+        "QQQM"
+      ],
+      "SGOV": [
+        [
+          2020,
+          6,
+          1
+        ],
+        "BIL"
+      ],
+      "QQQM": [
+        [
+          2020,
+          10,
+          13
+        ],
+        "QQQ"
+      ]
+    },
+    "V5_UP_RATIO": 1.035,
+    "V5_DOWN_RATIO": 0.97,
+    "V5_UP_EXIT_RATIO": 1.01,
+    "V5_STRONG_AFTER_DAYS": 0,
+    "V5_CHOP_CROSSINGS": 0,
+    "V5_CHOP_SCOPE": "UP",
+    "V5_BUCKET_MODE": "FIVE",
+    "V5_CHOPPY_UP_RATIO": 1.01,
+    "V5_CHOPPY_DOWN_RATIO": 0.99,
+    "V5_CHOPPY_ER_LOOKBACK": 20,
+    "V5_CHOPPY_ER_MAX": 0.25,
+    "V5_UP_SLOT_MODE": "EQUAL",
+    "V5_STRONG_UP_RULE": "ALL_UP",
+    "V5_STRONG_ER_LOOKBACK": 20,
+    "V5_STRONG_ER_MIN": 0.4,
+    "V5_STRONG_ER_EXIT": 0.25,
+    "V5_STRONG_MIN_HOLD": 0,
+    "V5_STRONG_SIGNAL_SOURCE": "NDX",
+    "V5_EARLY_DOWN": "NONE",
+    "V5_VOLSPIKE_MULT": 1.5,
+    "V5_FULL_INVEST_BUCKETS": [],
+    "V5_UP_DERISK_ASSET": "SGOV",
+    "V5_STRONG_DERISK_ASSET": "CASCADE",
+    "V5_CASH_RESERVE_USD": 13.0,
+    "V5_REDEPLOY_FREED_CASH": true,
+    "V5_REBALANCE_BAND": 0.05,
+    "V5_CONFIRM_DAYS": 4,
+    "V5_DOWN_CONFIRM_DAYS": 2,
+    "V5_STRONG_UP_RATIO": 1.06,
+    "V5_STRONG_UP_RET63": 0.1,
+    "V5_STRONG_DOWN_RATIO": 0.9,
+    "V5_STRONG_DOWN_RET63": -0.15,
+    "V5_PERCENTILE_LOOKBACK": 252,
+    "V5_STRONG_PERCENTILE": 80.0,
+    "V5_WEAK_PERCENTILE": 20.0,
+    "V5_SPMO_ENTRY_RATIO": 1.03,
+    "V5_SPMO_EXIT_RATIO": 0.99,
+    "V5_GPIQ_FLOOR": 0.2,
+    "V5_UP_GPIQ_MAX": 0.7,
+    "V5_UP_GPIQ_MIN": 0.2,
+    "V5_CASH_MIN_SCALE": 0.3,
+    "V5_VOL_TARGET_ANNUAL": 0.15,
+    "V5_VOL_LOOKBACK_DAYS": 20,
+    "V5_SIGNAL_SATURATION_BAND": 0.05,
+    "RUN_MODE": "DEV_EARLY",
+    "PARAMETERS_FROZEN": false,
+    "UNLOCK_FINAL_HOLDOUT": false,
+    "STRENGTH_CLASSIFIER_MODE": "THRESHOLD_EXT",
+    "CASH_RATIO_MODE": "VOL_TARGET",
+    "OVERRIDES": {},
+    "START": "2016-01-04",
+    "END": "2019-12-31"
+  },
+  "source_sha256": {
+    "sgs/config.py": "03cf745c39cf1977813da1cea4a037651aaab00cbfe868267bbe4a5055266b14",
+    "sgs/config_v5.py": "7fcb6edbe746feaeb3925ebbde8b536b82bccc245c3ee39b0f6d2ea2c6a1d89d",
+    "sgs/regime_v5.py": "401e024943ad54f288fbae8f032a45ba63568f5f02f67727cca01a47548767a8",
+    "sgs/engine.py": "dbdbf9bd27d6465586ad0d939867619830eec37022734ac70d24645de83f601f",
+    "sgs/engine_v5.py": "bc7482faf8b411d1c830ed73709564aada37570c33852614ad6487993cc1fa89",
+    "sgs/data.py": "fa196e48df39e4e6e68782b02f42da7ffaaf293b1a0cd2d35f5351f13016b353",
+    "sgs/corporate_actions.py": "92853d54627effdd0a780446aaa4ba8a5880be5dab928097354f37839ab472aa",
+    "sgs/cli.py": "16d5991f3bc9dfc697ca5b7e2611902cba429ac8350927aa975e9f62070bff73"
+  }
+}

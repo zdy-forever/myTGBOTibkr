@@ -284,7 +284,9 @@ def test_notification_retry_is_scheduled_independently_of_monthly_job():
     app = configure_application(Application.builder().token("123456:TEST").build(), None, None)
     jobs = {j.name: j for j in app.job_queue.jobs()}
     assert jobs["strategy-notification-retry"].callback is svc.retry_pending_notifications
-    assert jobs["monthly-strategy"].callback is svc.monthly_tick
+    from quantbot.daily_service import daily_tick
+    assert jobs["daily-strategies"].callback is daily_tick
+    assert "monthly-strategy" not in jobs
 
 
 MON = datetime(2026, 11, 2, 2, 30, tzinfo=UTC)          # Monday 2026-11-02 10:30 in UTC+8 = Sunday 21:30 ET: the evening before the US open of the first trading day
@@ -394,15 +396,15 @@ async def test_check_shows_ranking_and_suggestions_for_the_caller_only_when_data
         svc.store_run(session, fresh_run())
     app = FakeApp(factory, accounts)
     update, context, message = handler_args(factory, accounts, 1, app)
-    await bot.check(update, context)
+    await bot.check_one(update, context)
     text = message.texts[0]
     assert "2026-10-09" in text and "排名前" in text and "买入" in text and DISCLAIMER in text and "持仓" not in text.split("排名前")[1].split("✅可买入")[0]
     update2, context2, message2 = handler_args(factory, accounts, 2, app)
-    await bot.check(update2, context2)
+    await bot.check_one(update2, context2)
     assert "📌 AAA" in message2.texts[0] and "持仓" in message2.texts[0]                      # user 2 sees their own holding, user 1 did not
-    assert not app.tasks and bot.signals is bot.check                                          # fresh data: no refresh, and /signals is an alias
+    assert not app.tasks and bot.signals is bot.check_one                                          # fresh data: no refresh, and /signals is an alias
     update3, context3, message3 = handler_args(factory, accounts, 404, app)
-    await bot.check(update3, context3)
+    await bot.check_one(update3, context3)
     assert "/start" in message3.texts[0]
 
 
@@ -426,8 +428,8 @@ async def test_check_with_stale_data_shows_the_old_result_then_sends_each_waiter
     app = FakeApp(factory, accounts)
     u1, c1, m1 = handler_args(factory, accounts, 1, app)
     u2, c2, m2 = handler_args(factory, accounts, 2, app)
-    await bot.check(u1, c1)
-    await bot.check(u2, c2)
+    await bot.check_one(u1, c1)
+    await bot.check_one(u2, c2)
     assert "不是最新" in m1.texts[0] and "2026-10-09" in m1.texts[0] and len(app.tasks) == 1     # one shared refresh for both askers
     await app.run_tasks()
     assert len(calls) == 1 and sorted(chat for chat, _ in app.bot.sent) == [1, 2]
@@ -445,7 +447,7 @@ async def test_check_does_not_start_another_refresh_right_after_an_attempt(facto
         svc.store_run(session, make_run("failed", started=datetime.now(UTC) - timedelta(minutes=5)))
     app = FakeApp(factory, accounts)
     update, context, message = handler_args(factory, accounts, 1, app)
-    await bot.check(update, context)
+    await bot.check_one(update, context)
     assert "30 分钟" in message.texts[0] and not app.tasks
 
 
@@ -460,7 +462,7 @@ async def test_check_failure_is_reported_to_the_waiting_user(factory, accounts, 
     monkeypatch.setattr(svc, "refresh_run", broken)
     app = FakeApp(factory, accounts)
     update, context, message = handler_args(factory, accounts, 1, app)
-    await bot.check(update, context)
+    await bot.check_one(update, context)
     assert "还没有可用的数据" in message.texts[0]
     await app.run_tasks()
     assert app.bot.sent and "更新失败" in app.bot.sent[0][1] and app.bot_data["check_job_running"] is False
@@ -497,8 +499,14 @@ def test_help_topics_exist_fit_telegram_and_cover_every_registered_command():
     admin = {"users", "stats", "health", "runstrategy", "announce", "important_announce", "whitelist_add", "whitelist_list", "whitelist_show", "whitelist_edit", "whitelist_remove",
              "admin_help", "admin_list", "admin_show", "admin_add", "admin_edit", "admin_remove",
              "start", "cancel", "help", "signals"}
-    assert {"check", "cooldown"} <= commands
-    missing = [c for c in sorted(commands - admin) if f"/{c}" not in help_text.QUICK]
+    assert {"check", "check1", "check2", "cooldown"} <= commands
+    handlers = {command: handler.callback for handler in app.handlers[0]
+                if isinstance(handler, CommandHandler) for command in handler.commands}
+    assert handlers["check"] is bot.check
+    assert handlers["check1"] is bot.check_one
+    assert handlers["check2"] is bot.check_two
+    assert handlers["signals"] is bot.check_one
+    missing = [c for c in sorted(commands - admin) if f"/{c}" not in "\n".join(help_text.help_pages({"strategy1", "strategy2"}))]
     assert not missing, f"/help does not mention: {missing}"
 
 
@@ -620,7 +628,7 @@ async def test_portfolio_command_and_csv_export_never_show_exponents_or_trailing
     with factory.begin() as session:
         user = session.get(User, uid)
         csv_text = export_portfolio_csv(session, user)
-    assert "E-" not in csv_text and "0000000" not in csv_text and "current_cash,0,0.00 USD" in csv_text and "ISRG,0.55,100.00 USD" in csv_text
+    assert "E-" not in csv_text and "0000000" not in csv_text and "CASH,0,0.00 USD" in csv_text and "ISRG,0.55,100.00 USD" in csv_text
     other = add_user(factory, 2, cash="5")
     with factory.begin() as session:
         result = import_portfolio_csv(session, session.get(User, other), csv_text, actor=2)
@@ -833,7 +841,7 @@ async def test_check_still_works_after_the_monthly_push_has_been_recorded(factor
         assert svc.result_of(svc.latest_completed(session)).status == "ok"
     app = FakeApp(factory, accounts)
     update, context, message = handler_args(factory, accounts, 1, app)
-    await bot.check(update, context)
+    await bot.check_one(update, context)
     assert "策略检查" in message.texts[0] and not app.tasks
     app.bot_data["session_factory"] = factory
     result = await svc.run_and_notify(app)                                       # reuses the stored run although it now carries the marker
@@ -862,7 +870,7 @@ def test_every_command_in_the_help_comes_with_how_to_use_it():
     quick = help_text.QUICK
     for usage in ("<code>ISRG 0.55 374.21 USD</code>", "<code>ISRG 0.75 380</code>", "<code>/remove ISRG</code>", "<code>1000 USD</code>", "<code>/settings signals</code>", "<code>/settings announcements</code>", "再把 CSV 文件发给我", "直接发送，会收到一份 CSV", "发送后点确认", "输入过程中随时取消"):
         assert usage in quick, usage
-    for command in ("/check", "/cooldown", "/portfolio", "/history", "/add", "/edit", "/remove", "/cash", "/import", "/export", "/settings", "/unbind", "/cancel"):
+    for command in ("/check", "/check1", "/cooldown", "/portfolio", "/history", "/add", "/edit", "/remove", "/cash", "/import", "/export", "/settings", "/unbind", "/cancel"):
         line = next(x for x in quick.splitlines() if x.startswith(command + "　"))
         assert len(line) > len(command) + 4, command                                    # a description follows every command
 

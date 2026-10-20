@@ -88,6 +88,42 @@ class UserStrategy(Base):
     enabled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
+class StrategyCash(Base):
+    __tablename__ = "strategy_cash"
+    __table_args__ = (CheckConstraint("balance >= 0", name="ck_strategy_cash_balance"),)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    strategy_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    balance: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+
+
+class StrategyPool(Base):
+    __tablename__ = "strategy_pools"
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    symbols: Mapped[list] = mapped_column(JSON, nullable=False)
+
+
+class DailyReport(Base):
+    __tablename__ = "daily_reports"
+    __table_args__ = (UniqueConstraint("user_id", "strategy_id", "session_date", name="uq_daily_report"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    strategy_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    session_date: Mapped[date] = mapped_column(Date, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    data_ready: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class StrategySnapshot(Base):
+    __tablename__ = "strategy_snapshots"
+    strategy_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    session_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    data: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
 class AdminGrant(Base):
     __tablename__ = "admin_grants"
     telegram_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)

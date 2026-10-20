@@ -24,7 +24,7 @@ def test_csv_cash_special_row_round_trip(factory, accounts):
         cash = PortfolioService.cash(session, user.id)
         assert cash.balance == Decimal("1000.00000000")
         assert cash.management_mode == PlanFrequency.MANUAL                                   # the second column of the cash row is ignored
-        assert "current_cash,0,1000.00 USD" in export_portfolio_csv(session, user)
+        assert "CASH,0,1000.00 USD" in export_portfolio_csv(session, user)
 
 
 def test_csv_is_atomic_on_invalid_late_row(factory, accounts):

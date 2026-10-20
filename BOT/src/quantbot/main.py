@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
+from zoneinfo import ZoneInfo
 
 from telegram.ext import Application
 
@@ -51,6 +52,12 @@ def build_application(settings: Settings) -> Application:
     configure_application(application, accounts, factory)
     application.bot_data["strategy_autorun"] = settings.strategy_autorun
     application.bot_data["strategy_push"] = (settings.strategy_push_timezone, settings.strategy_push_hour)
+    if application.job_queue:
+        from .daily_service import daily_tick
+        application.job_queue.run_daily(
+            daily_tick, time(hour=settings.strategy_push_hour,
+                             tzinfo=ZoneInfo(settings.strategy_push_timezone)),
+            name="daily-strategies-scheduled")
     return application
 
 
