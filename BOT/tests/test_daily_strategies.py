@@ -268,11 +268,11 @@ def test_s1_monthly_buy_only_on_selected_day(factory):
         assert '🟢' not in daily.s1_text(session,user,make_run(),SETTINGS,today,days,app)
 
 
-def test_frozen_cfg_unchanged():
+def test_schd20_preserves_frozen_thresholds():
     frozen=json.loads((Path(sgs.__file__).parents[1]/'FROZEN_RULES.json').read_text())['default_cfg_snapshot']
     actual=cfg()
     for key,value in frozen.items():
-        if key not in {'PERIODS','START','END','RUN_MODE'}:
+        if key not in {'PERIODS','START','END','RUN_MODE','V5_PROXIES','SLIPPAGE_PER_SIDE'}:
             assert json.loads(json.dumps(actual[key]))==value,key
 
 
@@ -293,15 +293,15 @@ def test_g2_replay_and_missing_data():
     resumed=snapshot(market,today,snapshot(market,date(2026,10,19)))
     assert resumed==full
     assert full['as_of']=='2026-10-19'
-    assert full['weights']['GPIQ']>=.2
+    assert full['weights']['SCHD']>=.2
     assert abs(sum(full['weights'].values())-1)<1e-9
-    market.rows=market.rows[~((market.rows.symbol=='GPIQ')&(market.rows.date==pd.Timestamp('2026-10-19')))]
+    market.rows=market.rows[~((market.rows.symbol=='SCHD')&(market.rows.date==pd.Timestamp('2026-10-19')))]
     with pytest.raises(ValueError,match='缺失'):
         snapshot(market,today)
 
 
 def test_g2_orders_bounded_by_cash_including_costs():
-    data={'weights':{'GPIQ':.2,'SGOV':.8},'prices':{t:100 for t in TICKERS}}
+    data={'weights':{'SCHD':.2,'SGOV':.8},'prices':{t:100 for t in TICKERS}}
     actions=recommendations(data,{'TQQQ':10},0)
     assert actions[0]['action']=='SELL' and actions[0]['symbol']=='TQQQ'
     cash=0
@@ -358,7 +358,7 @@ async def test_daily_orchestration_generates_both_and_reuses_reports(factory, mo
     calls=[]
     def market_data(*args):
         calls.append(1)
-        return {'as_of':'2026-10-19','trend':'震荡','weights':{'GPIQ':1},'prices':{t:100 for t in TICKERS}}
+        return {'as_of':'2026-10-19','trend':'震荡','weights':{'SCHD':1},'prices':{t:100 for t in TICKERS}}
     monkeypatch.setattr(daily,'s2_snapshot',market_data)
     delivery=AsyncMock()
     monkeypatch.setattr(daily,'deliver_reports',delivery)
@@ -395,7 +395,7 @@ async def test_data_failure_recovers_without_duplicate_report_rows(factory, monk
         row_id=row.id
         row.created_at=now-timedelta(hours=1)
     monkeypatch.setattr(daily,'s2_snapshot',lambda *args:{'as_of':'2026-10-19','trend':'下跌',
-                        'weights':{'GPIQ':.2,'SGOV':.8},'prices':{t:100 for t in TICKERS}})
+                        'weights':{'SCHD':.2,'SGOV':.8},'prices':{t:100 for t in TICKERS}})
     await daily._daily_run(app,now)
     with factory.begin() as session:
         rows=list(session.scalars(select(DailyReport)))
@@ -515,11 +515,11 @@ async def test_default_pool_above_old_sixty_limit_can_be_edited(factory,accounts
 
 
 def test_s2_fractional_buy_with_less_than_one_share_cash():
-    data={'weights':{'GPIQ':1},'prices':{t:100 for t in TICKERS}}
+    data={'weights':{'SCHD':1},'prices':{t:100 for t in TICKERS}}
     orders=recommendations(data,{},50)
     assert len(orders)==1
     order=orders[0]
-    assert order['symbol']=='GPIQ' and order['action']=='BUY'
+    assert order['symbol']=='SCHD' and order['action']=='BUY'
     assert 0<order['shares']<1
     q=Decimal(str(order['shares']))
     price=Decimal(100)*(1+Decimal(str(cfg()['SLIPPAGE_PER_SIDE'])))
@@ -528,7 +528,7 @@ def test_s2_fractional_buy_with_less_than_one_share_cash():
 
 
 def test_s2_fractional_exit_preserves_sub_precision_dust_and_sells_first():
-    data={'weights':{'GPIQ':1},'prices':{t:100 for t in TICKERS}}
+    data={'weights':{'SCHD':1},'prices':{t:100 for t in TICKERS}}
     orders=recommendations(data,{'TQQQ':Decimal('.123456789')},100)
     assert orders[0]['symbol']=='TQQQ' and orders[0]['action']=='SELL'
     assert orders[0]['shares']==.123456
@@ -543,7 +543,7 @@ def test_s2_fractional_cash_and_holdings_invariants():
         prices={t:round(rng.uniform(5,1500),4) for t in TICKERS}
         held={t:Decimal(str(round(rng.uniform(0,5),8))) for t in TICKERS}
         cash=Decimal(str(round(rng.uniform(0,500),4)))
-        orders=recommendations({'weights':{'GPIQ':.2,'SGOV':.8},'prices':prices},held,cash)
+        orders=recommendations({'weights':{'SCHD':.2,'SGOV':.8},'prices':prices},held,cash)
         buy_seen=False
         for order in orders:
             q=Decimal(str(order['shares']))
@@ -567,6 +567,6 @@ def test_s2_fractional_report_readable_and_no_whole_share_excuse(factory):
         session.add(UserStrategy(user_id=uid,strategy_id='strategy2'))
     with factory.begin() as session:
         text=daily.s2_text(session,uid,{'as_of':'2026-10-19','trend':'震荡',
-            'weights':{'GPIQ':1},'prices':{t:100 for t in TICKERS}},date(2026,10,20))
-        assert '买入 GPIQ 0.' in text and '支持碎股' in text and '约 $' in text
+            'weights':{'SCHD':1},'prices':{t:100 for t in TICKERS}},date(2026,10,20))
+        assert '买入 SCHD 0.' in text and '支持碎股' in text and '约 $' in text
         assert '整股' not in text and 'e-' not in text

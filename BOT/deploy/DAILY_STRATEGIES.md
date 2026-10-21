@@ -4,6 +4,13 @@
 迁移 0015 新增策略现金、个人股票池、S2 状态快照及每日报告表，保留旧现金/持仓/订阅/历史。
 旧现金视为公共现金（CASH 0），旧 CSV 的 current_cash 行继续兼容。
 
+2026-10-21起，S2采用20% SCHD原逐级版：上涨动态TQQQ→SPMO/QQQM→SCHD→SGOV，震荡目标100% SCHD，
+下跌/强下跌通常20% SCHD＋80% SGOV；不加入MQQQ或快速退出覆盖规则。
+必须升级到迁移0016（`alembic upgrade head`），为每日报告记录策略版本；旧GPIQ快照及旧版报告会自动失效并重算。
+迁移不删除持仓、现金或历史。已有GPIQ只对分配给S2的份额生成卖出转仓建议，不会自动下单或修改记录。
+碎股建议采用20bps单边滑点预算＋估算佣金，参考最近完整收盘价，真实开盘成交可能偏离。当前配置见
+[S2部署快照](../../BACKEND/strategy2/DEPLOYED_RULES.json)。
+
 配置 `STRATEGY_AUTORUN=1`、`STRATEGY_PUSH_TIMEZONE=Asia/Shanghai`、`STRATEGY_PUSH_HOUR=10`。
 日任务从配置时间起检查真实美股交易日，开盘前失败可重试，开盘后不补发。
 每位用户每个策略每个交易日仅存一份报告（数据库唯一约束）；Telegram 临时失败最多重试五次，

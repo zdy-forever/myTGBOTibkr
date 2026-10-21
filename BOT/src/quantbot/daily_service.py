@@ -34,17 +34,26 @@ def report_for(session, uid, strategy_id, today):
 
 def needs_report(session, uid, strategy_id, today, now):
     report = report_for(session, uid, strategy_id, today)
+    if strategy_id == 'strategy2' and report:
+        from sgs.live import VERSION
+        if report.strategy_version != VERSION:
+            return True
     return report is None or (not report.data_ready and
                               now - s1._aware(report.created_at) >= timedelta(minutes=30))
 
 
 def save_report(session, uid, strategy_id, today, body, *, ready=True):
+    version = None
+    if strategy_id == 'strategy2':
+        from sgs.live import VERSION
+        version = VERSION
     report = report_for(session, uid, strategy_id, today)
     if report is None:
         session.add(DailyReport(user_id=uid, strategy_id=strategy_id, session_date=today,
-                                body=body, data_ready=ready))
+                                body=body, data_ready=ready, strategy_version=version))
     else:
         report.body = body
+        report.strategy_version = version
         report.created_at = datetime.now(UTC)
         report.data_ready = ready
         if ready:
@@ -102,23 +111,27 @@ def calendar_window(market, now, tz, hour):
 
 
 def s2_snapshot(factory, market, today):
-    from sgs.live import snapshot
+    from sgs.live import VERSION, snapshot
     with transaction(factory) as session:
         saved = session.get(StrategySnapshot, ('strategy2', today))
-        if saved:
+        if saved and saved.data.get('version') == VERSION:
             return saved.data
         previous = session.scalar(select(StrategySnapshot).where(
             StrategySnapshot.strategy_id == 'strategy2', StrategySnapshot.session_date < today)
             .order_by(StrategySnapshot.session_date.desc()).limit(1))
-        prior_data = previous.data if previous else None
+        prior_data = previous.data if previous and previous.data.get('version') == VERSION else None
     data = snapshot(market, today, prior_data)
     with transaction(factory) as session:
-        session.add(StrategySnapshot(strategy_id='strategy2', session_date=today, data=data))
+        saved = session.get(StrategySnapshot, ('strategy2', today))
+        if saved:
+            saved.data = data
+        else:
+            session.add(StrategySnapshot(strategy_id='strategy2', session_date=today, data=data))
     return data
 
 
 def s2_text(session, user_id, data, today):
-    from sgs.live import TICKERS, recommendations
+    from sgs.live import MANAGED_TICKERS, PROFILE_LABEL, recommendations
     fraction = allocation_fraction(session, user_id, 'strategy2')
     cash, currency = allocated_cash(session, user_id, 'strategy2')
     if currency != 'USD':
@@ -127,12 +140,13 @@ def s2_text(session, user_id, data, today):
     holdings = {}
     outside = []
     for p in positions:
-        if p.symbol in TICKERS and p.currency == 'USD' and p.exchange in s1.US_EXCHANGES:
+        if p.symbol in MANAGED_TICKERS and p.currency == 'USD' and p.exchange in s1.US_EXCHANGES:
             holdings[p.symbol] = holdings.get(p.symbol, 0) + p.shares * fraction
         else:
             outside.append(p.symbol)
     actions = recommendations(data, holdings, cash)
     lines = [f'📊 <b>策略 2 · 每日盘前报告 {today}</b>', f'行情截至：{data["as_of"]}',
+             f'策略配置：{PROFILE_LABEL}',
              f'当前趋势：<b>{escape(data["trend"])}</b>', f'可用现金：${cash:,.2f}',
              '目标配置：' + '、'.join(f'{escape(t)} {w:.1%}' for t, w in data['weights'].items() if w > 0), '',
              '<b>今日操作</b>']
@@ -248,6 +262,12 @@ async def deliver_reports(app, today, opening):
             user = session.get(User, report.user_id) if report else None
             if not report or not eligible(session, app, user, report.strategy_id):
                 continue
+            if report.strategy_id == 'strategy2':
+                from sgs.live import VERSION
+                if report.strategy_version != VERSION:
+                    report.last_error = '策略已升级；旧报告已作废，等待重新计算。'
+                    report.attempts = 5
+                    continue
             selection = session.get(UserStrategy, (user.id, report.strategy_id))
             if s1._aware(selection.enabled_at) > s1._aware(report.created_at):
                 report.last_error = '设置已改变；旧报告已作废，请手动查看最新建议。'

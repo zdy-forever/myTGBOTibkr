@@ -108,6 +108,7 @@ class DailyReport(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     strategy_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    strategy_version: Mapped[str | None] = mapped_column(String(80))
     session_date: Mapped[date] = mapped_column(Date, nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     data_ready: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

@@ -1,7 +1,7 @@
 # 策略目录
 
 - `strategy1/`：月度定投个股(加强型 QQQ)。共享行情与 SEC 财务数据，按用户持仓和个人候选池计算。
-- `strategy2/`：G2 趋势 ETF 轮动。冻结规则与纯状态机来自 auto-quant/strategy2，`sgs.live` 为只读盘前适配器。
+- `strategy2/`：20% SCHD底仓的G2原逐级ETF轮动。基础状态机来自 auto-quant/strategy2，当前配置见 `strategy2/DEPLOYED_RULES.json`，`sgs.live` 为只读盘前适配器。
 
 从 BOT 目录安装：
 

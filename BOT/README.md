@@ -4,6 +4,9 @@
 
 > 策略 1（月度定投个股）与策略 2（G2 趋势 ETF 轮动）均已接入 BACKEND。每个美股交易日盘前出报告；S1 月度买入仍按用户日期提醒。两策略按用户资金配置分别生成建议，不自动下单。部署与资金模式见 [每日双策略部署](deploy/DAILY_STRATEGIES.md)。
 
+策略2当前为20% SCHD底仓原逐级版，QQQ判断趋势、动态TQQQ进攻，不加入MQQQ或快速退出覆盖规则。
+升级需在本目录执行 `alembic upgrade head`，旧版缓存和报告自动重算；详见 [S2配置](../BACKEND/strategy2/README.md)。
+
 ## 安全与数据模型
 
 - `users`：UUID 内部主键、Telegram ID、带服务器密钥的手机号 HMAC 指纹、角色；不保存完整手机号。

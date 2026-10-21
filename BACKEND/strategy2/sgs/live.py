@@ -1,4 +1,4 @@
-"""Read-only G2 daily adapter. Uses closed bars; never imports the research runner."""
+"""Read-only SCHD20 G2 adapter. Closed bars only; no research runner or orders."""
 from dataclasses import asdict
 from datetime import timedelta
 from decimal import Decimal, ROUND_DOWN
@@ -10,16 +10,42 @@ import pandas as pd
 from .config_v5 import build_cfg_v5
 from . import regime_v5 as rv
 
-TICKERS = ('QQQ', 'QQQM', 'SPMO', 'GPIQ', 'TQQQ', 'SGOV')
+TICKERS = ('QQQ', 'QQQM', 'SPMO', 'SCHD', 'TQQQ', 'SGOV')
+LEGACY_TICKERS = ('GPIQ',)
+MANAGED_TICKERS = TICKERS + LEGACY_TICKERS
 LABELS = {'STRONG_UP': '强上涨', 'UP': '上涨', 'SIDEWAYS': '震荡',
           'DOWN': '下跌', 'STRONG_DOWN': '强下跌'}
-VERSION = 'strategy2-G2-20261020'
-EXECUTION_VERSION = 'fractional-v1'
+VERSION = 'strategy2-G2-SCHD20-20261021'
+PROFILE_LABEL = 'SCHD最低目标20% · 原逐级版'
+EXECUTION_VERSION = 'fractional-v2-schd20'
 SHARE_STEP = Decimal('0.000001')
 
 
 def cfg():
-    return build_cfg_v5('DEV_RECENT')
+    config = build_cfg_v5('DEV_RECENT')
+    # GPIQ remains the frozen core's internal income-role name. Both its
+    # targets AND volatility inputs are mapped to the actual SCHD instrument.
+    config.update(V5_GPIQ_FLOOR=.2, V5_PROXIES={}, SLIPPAGE_PER_SIDE=.002)
+    return config
+
+
+def income_sleeve(sleeve):
+    """Replace every income-role allocation, including CASCADE, with SCHD."""
+    result = {}
+    for ticker, weight in sleeve.items():
+        ticker = 'SCHD' if ticker == 'GPIQ' else ticker
+        result[ticker] = result.get(ticker, 0.) + weight
+    return result
+
+
+def target_weights(config, bucket, qsig, slot, scale, *, spmo_sig=None, level_scales=None):
+    weights = income_sleeve(rv.effective_weights_v5(
+        config, bucket, qsig, slot, scale, spmo_sig=spmo_sig, level_scales=level_scales))
+    if (not set(weights) <= set(TICKERS) or weights.get('SCHD', 0) < .2-1e-10
+            or any(not math.isfinite(w) or w < 0 for w in weights.values())
+            or sum(weights.values()) > 1+1e-10):
+        raise ValueError('S2 目标配置无效，暂停建议。')
+    return {t: w for t, w in weights.items() if w > 1e-12}
 
 
 def _panel(bars, session_date):
@@ -32,6 +58,8 @@ def _panel(bars, session_date):
 def snapshot(market, session_date, previous=None):
     """Persist classifier state after each closed session; replay missed sessions on restart."""
     config = cfg()
+    if previous and previous.get('version') != VERSION:
+        previous = None  # Never reuse a GPIQ-era allocation or classifier snapshot.
     start = (session_date - timedelta(days=800)).isoformat() if previous else '2014-01-01'
     end = session_date.isoformat() + 'T00:00:00Z'
     panel = _panel(market.daily_bars(TICKERS, start, end=end, adjustment='all'), session_date)
@@ -67,7 +95,7 @@ def snapshot(market, session_date, previous=None):
         if not sleeve:
             return None
         mixed = None
-        for ticker, share in sleeve.items():
+        for ticker, share in income_sleeve(sleeve).items():
             prices = panel[ticker].tail(config['V5_VOL_LOOKBACK_DAYS']).to_numpy(dtype=float)
             if len(prices) != config['V5_VOL_LOOKBACK_DAYS'] or not np.isfinite(prices).all() or (prices <= 0).any():
                 raise ValueError('S2 波动率预热数据不足，暂停建议。')
@@ -83,13 +111,18 @@ def snapshot(market, session_date, previous=None):
     if rv.derisk_asset(config, bucket) == 'CASCADE':
         levels = [rv.vol_target_scale(config, vol(level))
                   for level in rv.derisk_levels(config, bucket, slot, qsig, ssig)]
-    weights = rv.effective_weights_v5(config, bucket, qsig, slot, scale, spmo_sig=ssig, level_scales=levels)
-    raw = _panel(market.daily_bars(TICKERS, expected[-1].date().isoformat(), end=end, adjustment='raw'), session_date)
+    weights = target_weights(config, bucket, qsig, slot, scale, spmo_sig=ssig, level_scales=levels)
+    # Legacy GPIQ is quoted only for a possible exit. It is never a target or
+    # signal input, and a missing legacy quote cannot block an unexposed user.
+    raw = _panel(market.daily_bars(MANAGED_TICKERS, expected[-1].date().isoformat(), end=end, adjustment='raw'), session_date)
     if raw.empty or raw.index[-1] != expected[-1] or not set(TICKERS) <= set(raw.columns):
         raise ValueError('S2 未复权参考价格缺失，暂停建议。')
     prices = {ticker: float(raw.iloc[-1][ticker]) for ticker in TICKERS}
     if any(not math.isfinite(p) or p <= 0 for p in prices.values()):
         raise ValueError('S2 参考价格无效，暂停建议。')
+    for ticker in LEGACY_TICKERS:
+        if ticker in raw and math.isfinite(raw.iloc[-1][ticker]) and raw.iloc[-1][ticker] > 0:
+            prices[ticker] = float(raw.iloc[-1][ticker])
     return dict(version=VERSION, as_of=expected[-1].date().isoformat(), state=asdict(state),
                 bucket=bucket, trend=LABELS[bucket], weights=weights, prices=prices)
 
@@ -135,16 +168,22 @@ def recommendations(data, holdings, cash, previous=None):
     the user's allocated holding or a purchase above the available cash.
     """
     config = cfg()
-    prices = {t: _decimal(data['prices'][t]) for t in TICKERS}
     weights = {t: _decimal(w) for t, w in data['weights'].items()}
-    held = {t: _decimal(holdings.get(t, 0)) for t in TICKERS}
+    held = {t: _decimal(holdings.get(t, 0)) for t in MANAGED_TICKERS}
     cash = _decimal(cash)
     if (not cash.is_finite() or cash < 0
-            or any(not p.is_finite() or p <= 0 for p in prices.values())
             or any(not q.is_finite() or q < 0 for q in held.values())
+            or not set(weights) <= set(TICKERS)
             or any(not w.is_finite() or not 0 <= w <= 1 for w in weights.values())
             or sum(weights.values()) > Decimal('1.000001')):
         raise ValueError('S2 现金、持仓或行情数据无效，暂停建议。')
+    held = {t: q for t, q in held.items() if t in TICKERS or q > 0}
+    missing = set(held)-set(data['prices'])
+    if missing:
+        raise ValueError('S2 持仓参考价格缺失（' + '、'.join(sorted(missing)) + '），暂停建议。')
+    prices = {t: _decimal(data['prices'][t]) for t in held}
+    if any(not p.is_finite() or p <= 0 for p in prices.values()):
+        raise ValueError('S2 参考价格无效，暂停建议。')
     nav = cash + sum(held[t] * prices[t] for t in held)
     if nav <= 0:
         return []
