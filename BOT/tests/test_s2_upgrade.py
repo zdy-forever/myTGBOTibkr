@@ -20,9 +20,10 @@ def only_s2(factory, user_id):
 
 
 @pytest.mark.parametrize('cached_today', [True, False])
-def test_old_snapshot_replaced_and_never_passed_to_new_classifier(factory, monkeypatch, cached_today):
+@pytest.mark.parametrize('old_version', ['strategy2-G2-20261020', 'strategy2-G2-SCHD20-20261021'])
+def test_old_snapshot_replaced_and_never_passed_to_new_classifier(factory, monkeypatch, cached_today, old_version):
     today = date(2026, 10, 20)
-    old = {'version': 'strategy2-G2-20261020', 'weights': {'GPIQ': 1}}
+    old = {'version': old_version, 'weights': {'GPIQ': 1}}
     with factory.begin() as session:
         session.add(StrategySnapshot(strategy_id='strategy2', session_date=today-timedelta(days=1), data=old))
         if cached_today:
@@ -44,14 +45,15 @@ def test_old_snapshot_replaced_and_never_passed_to_new_classifier(factory, monke
         assert len(rows) == 1 and rows[0].data == current
 
 
-async def test_stale_ready_report_is_not_delivered_and_is_recomputed(factory):
+@pytest.mark.parametrize('old_version', [None, 'strategy2-G2-SCHD20-20261021'])
+async def test_stale_ready_report_is_not_delivered_and_is_recomputed(factory, old_version):
     uid = add_user(factory, 1)
     only_s2(factory, uid)
     now = datetime.now(UTC)
     today = now.date()
     with factory.begin() as session:
         session.add(DailyReport(user_id=uid, strategy_id='strategy2', session_date=today,
-                               body='旧GPIQ买入建议', strategy_version=None))
+                               body='旧版买入建议', strategy_version=old_version))
     app = SimpleNamespace(bot_data={'session_factory': factory}, bot=SimpleNamespace(send_message=AsyncMock()))
     await daily.deliver_reports(app, today, now+timedelta(hours=1))
     app.bot.send_message.assert_not_awaited()

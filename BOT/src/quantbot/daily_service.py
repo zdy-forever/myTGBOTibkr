@@ -155,10 +155,11 @@ def s2_text(session, user_id, data, today):
               f' 股（约 ${a["shares"] * a["reference_price"]:.2f}，参考价 ${a["reference_price"]:.2f}）'
               for a in actions]
     if not actions:
-        lines.append('今日暂无可执行的调整建议：持仓无需调整，或可用资金不足。')
+        lines.append('今日暂无可执行的调整建议：持仓偏离未达到调仓条件，或可用资金不足。')
     if outside:
         lines.append('本策略只调整 ETF 范围内的持仓，其他证券保持不变。')
-    lines += ['', '支持碎股建议，数量最多六位小数。份额按资金分配计算；卖出后再考虑买入。参考上一交易日收盘价，实际成交价格会变化。',
+    lines += ['', '目标比例小幅变化不一定需要交易，请以「今日操作」为准。',
+              '支持碎股建议，数量最多六位小数。份额按资金分配计算；卖出后再考虑买入。参考上一交易日收盘价，实际成交价格会变化。',
               '成交后请更新持仓和现金；未更新时后续报告可能重复提醒。', DISCLAIMER_HTML]
     return '\n'.join(lines)
 

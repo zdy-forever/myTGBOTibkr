@@ -8,16 +8,18 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sgs import regime_v5 as rv
-from sgs.live import TICKERS, VERSION, cfg, income_sleeve, target_weights
+from sgs.live import TICKERS, VERSION, cfg, income_sleeve, risk_scale, target_weights
 
 
 def verify(research, output):
-    cache=research/'schd20_robust_results/cache/long.pkl'
-    reference=research/'schd20_reentry_results/ledger_long_base20_baseline.parquet'
+    cache=research/'etf_location_results/cache/panels.pkl'
+    reference=research/'schd_direct_sweep_results/cache/ledger_long_base20_direct_v20.parquet'
+    provenance=research/'schd_direct_sweep_results/SOURCES.json'
+    assert hashlib.sha256(cache.read_bytes()).hexdigest()==json.loads(provenance.read_text())['sha256']
     with cache.open('rb') as f:
         data=pickle.load(f)
-    bars,signals,first,end=data['market']
     ledger=pd.read_parquet(reference)
+    bars,signals,first,end=data['bars'],data['signals'],ledger.index[0],ledger.index[-1]
     close=bars.pivot(index='session',columns='symbol',values='close')[list(TICKERS)]
     split=bars.pivot(index='session',columns='symbol',values='split_ratio')[list(TICKERS)].fillna(1)
     dividend=bars.pivot(index='session',columns='symbol',values='dividend')[list(TICKERS)].fillna(0)
@@ -47,11 +49,9 @@ def verify(research, output):
                       for ticker,share in income_sleeve(sleeve).items())
             return float(np.std(mixed,ddof=1)*np.sqrt(252))
         sleeve=rv.bucket_sleeve(config,bucket,slot,qsig,ssig)
-        _,tilt=rv.up_bucket_tilt(config,qsig) if bucket=='UP' else (None,None)
-        scale=rv.cash_ratio_scale(config,config['CASH_RATIO_MODE'],bucket,qsig,tilt,
-            vol(sleeve),rv.bucket_risk_ticker(config,bucket,slot),rv.sleeve_leverage(sleeve))
+        scale=risk_scale(config,bucket,qsig,slot,vol(sleeve),sleeve)
         levels=None
-        if rv.derisk_asset(config,bucket)=='CASCADE':
+        if bucket!='STRONG_UP' and rv.derisk_asset(config,bucket)=='CASCADE':
             levels=[rv.vol_target_scale(config,vol(level)) for level in rv.derisk_levels(config,bucket,slot,qsig,ssig)]
         weights=target_weights(config,bucket,qsig,slot,scale,spmo_sig=ssig,level_scales=levels)
         delta=max(abs(weights.get(t,0)-ledger.loc[day,'target_'+t]) for t in TICKERS)
@@ -59,9 +59,9 @@ def verify(research, output):
         assert delta<1e-10,(day,delta,weights)
         checked+=1; regimes[bucket]=regimes.get(bucket,0)+1
     assert checked==len(ledger)
-    result=dict(version=VERSION,comparison='Frozen audited SCHD20 original baseline; target/classifier parity only, not live fills or future returns.',
+    result=dict(version=VERSION,comparison='Selected direct_v20 research: SCHD20 floor, STRONG_UP volatility parameter20%, direct SCHD. Target/classifier parity only, not live fills or future returns.',
         first=str(first.date()),last=str(end.date()),sessions=checked,regimes=regimes,max_target_weight_error=error,
-        source_files={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in [cache,reference,Path(__file__)]})
+        source_files={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in [cache,reference,provenance,Path(__file__)]})
     output.write_text(json.dumps(result,indent=2))
     return result
 

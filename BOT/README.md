@@ -4,7 +4,7 @@
 
 > 策略 1（月度定投个股）与策略 2（G2 趋势 ETF 轮动）均已接入 BACKEND。每个美股交易日盘前出报告；S1 月度买入仍按用户日期提醒。两策略按用户资金配置分别生成建议，不自动下单。部署与资金模式见 [每日双策略部署](deploy/DAILY_STRATEGIES.md)。
 
-策略2当前为20% SCHD底仓原逐级版，QQQ判断趋势、动态TQQQ进攻，不加入MQQQ或快速退出覆盖规则。
+策略2当前为20% SCHD底仓、20%进攻波动参数的直达SCHD版，QQQ判断趋势、动态TQQQ进攻，削减的进攻仓位直接转入SCHD。其他趋势和调仓门槛保持原规则。
 升级需在本目录执行 `alembic upgrade head`，旧版缓存和报告自动重算；详见 [S2配置](../BACKEND/strategy2/README.md)。
 
 ## 安全与数据模型
@@ -103,7 +103,7 @@ QUANT_STRATEGY_HOME=/opt/quantbot/app/data/strategy   # 部署时务必设在可
 
 - **每日运行**：按 `STRATEGY_PUSH_TIMEZONE` / `STRATEGY_PUSH_HOUR`（默认北京时间 10:00）运行，并每五分钟检查待办。真实美股休市日跳过，开盘后不补发盘前建议。S1 每日检查持仓，月度买入按 /auto_notice_date；S2 报告趋势、目标配置与操作，无操作也报告。失败与重试规则见部署文档。/check 检查全部已启用策略，/check1 与 /check2 可随时手动查看，不向其他用户推送。
 - **资金模式**：独立现金用 `CASH 1 200USD` / `CASH 2 300USD`；已有持仓按独立金额占总现金的比例划分计算份额。只有公共现金 `CASH 0` 模式可设置 `/strategy_weights 1=60 2=40`，比例每项大于 0、最多两位小数且合计 100%。未启用策略的独立金额保留；预算编号不会启用策略。设置变化使旧的待发建议失效，不自动划转资金。
-- **数据库升级**：个人提醒日期、随机模式、白名单备注、多策略启用记录和资金权重由 Alembic 迁移持久保存。现有安装更新代码后，启动前需在 `BOT/` 目录执行 `.venv/bin/alembic upgrade head`（使用部署实际的虚拟环境路径；最新迁移为 `0015_daily_strategies`）。已有单策略用户迁移为 100%；已有多策略用户需要手动分配。新用户需主动启用策略。持仓、订阅状态和已完成月份保留。
+- **数据库升级**：个人提醒日期、随机模式、白名单备注、多策略启用记录和资金权重由 Alembic 迁移持久保存。现有安装更新代码后，启动前需在 `BOT/` 目录执行 `.venv/bin/alembic upgrade head`（使用部署实际的虚拟环境路径；最新迁移为 `0016_daily_report_version`）。已有单策略用户迁移为 100%；已有多策略用户需要手动分配。新用户需主动启用策略。持仓、订阅状态和已完成月份保留。
 - **旧 S1 管理员手动推送流程**：一次共享运行（行情、SEC 财报，不含任何用户数据）→ 存入 `strategy_runs`（`metadata_json` 是整份结果）→ 逐个用户、各自单独事务、只读该用户自己的 `positions` 和 `cash_accounts` 打分 → 写入 `user_signals` → 每人一条 Telegram 消息推送（受 `/settings signals` 开关控制；失败记录在 `notification_attempts` / `last_error`，最多重试 5 次）。
 - **用户自己填持仓**：`/add`、`/import`、`/cash`。可投入金额就是该用户的现金余额，现金为 0 时不给买入金额，会提示先用 `/cash` 填写。只分析美元金额。
 - **`signals` 表**：每次运行里每只出现在建议中的股票一行共享参考行（价格、P/V/F 原始分，`action` 固定 `HOLD`，表示共享层没有动作；买价区间字段留空，策略没有这类规则）。真正的买入/卖出在 `user_signals.action` 和 `recommendation` 里，按用户各自计算。

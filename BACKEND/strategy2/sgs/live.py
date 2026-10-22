@@ -15,9 +15,9 @@ LEGACY_TICKERS = ('GPIQ',)
 MANAGED_TICKERS = TICKERS + LEGACY_TICKERS
 LABELS = {'STRONG_UP': '强上涨', 'UP': '上涨', 'SIDEWAYS': '震荡',
           'DOWN': '下跌', 'STRONG_DOWN': '强下跌'}
-VERSION = 'strategy2-G2-SCHD20-20261021'
-PROFILE_LABEL = 'SCHD最低目标20% · 原逐级版'
-EXECUTION_VERSION = 'fractional-v2-schd20'
+VERSION = 'strategy2-G2-SCHD20-direct-vol20-20261022'
+PROFILE_LABEL = 'SCHD最低目标20% · 直达SCHD版'
+EXECUTION_VERSION = 'fractional-v3-schd20-direct-vol20'
 SHARE_STEP = Decimal('0.000001')
 
 
@@ -25,7 +25,8 @@ def cfg():
     config = build_cfg_v5('DEV_RECENT')
     # GPIQ remains the frozen core's internal income-role name. Both its
     # targets AND volatility inputs are mapped to the actual SCHD instrument.
-    config.update(V5_GPIQ_FLOOR=.2, V5_PROXIES={}, SLIPPAGE_PER_SIDE=.002)
+    config.update(V5_GPIQ_FLOOR=.2, V5_PROXIES={}, SLIPPAGE_PER_SIDE=.002,
+                  LIVE_STRONG_UP_VOL_TARGET_ANNUAL=.20)
     return config
 
 
@@ -38,9 +39,24 @@ def income_sleeve(sleeve):
     return result
 
 
+def risk_scale(config, bucket, qsig, slot, volatility, sleeve):
+    """Apply the selected attack parameter only in STRONG_UP; preserve other regimes."""
+    sizing = config
+    if bucket == 'STRONG_UP':
+        sizing = dict(config, V5_VOL_TARGET_ANNUAL=config['LIVE_STRONG_UP_VOL_TARGET_ANNUAL'])
+    _, tilt = rv.up_bucket_tilt(config, qsig) if bucket == 'UP' else (None, None)
+    return rv.cash_ratio_scale(sizing, config['CASH_RATIO_MODE'], bucket, qsig, tilt,
+                               volatility, rv.bucket_risk_ticker(config, bucket, slot),
+                               rv.sleeve_leverage(sleeve))
+
+
 def target_weights(config, bucket, qsig, slot, scale, *, spmo_sig=None, level_scales=None):
-    weights = income_sleeve(rv.effective_weights_v5(
-        config, bucket, qsig, slot, scale, spmo_sig=spmo_sig, level_scales=level_scales))
+    if bucket == 'STRONG_UP':
+        attack = (1 - config['V5_GPIQ_FLOOR']) * scale
+        weights = {'TQQQ': attack, 'SCHD': 1 - attack}
+    else:
+        weights = income_sleeve(rv.effective_weights_v5(
+            config, bucket, qsig, slot, scale, spmo_sig=spmo_sig, level_scales=level_scales))
     if (not set(weights) <= set(TICKERS) or weights.get('SCHD', 0) < .2-1e-10
             or any(not math.isfinite(w) or w < 0 for w in weights.values())
             or sum(weights.values()) > 1+1e-10):
@@ -104,11 +120,9 @@ def snapshot(market, session_date, previous=None):
         return float(np.std(mixed, ddof=1) * np.sqrt(252))
 
     sleeve = rv.bucket_sleeve(config, bucket, slot, qsig, ssig)
-    _, tilt = rv.up_bucket_tilt(config, qsig) if bucket == 'UP' else (None, None)
-    scale = rv.cash_ratio_scale(config, config['CASH_RATIO_MODE'], bucket, qsig, tilt,
-                               vol(sleeve), rv.bucket_risk_ticker(config, bucket, slot), rv.sleeve_leverage(sleeve))
+    scale = risk_scale(config, bucket, qsig, slot, vol(sleeve), sleeve)
     levels = None
-    if rv.derisk_asset(config, bucket) == 'CASCADE':
+    if bucket != 'STRONG_UP' and rv.derisk_asset(config, bucket) == 'CASCADE':
         levels = [rv.vol_target_scale(config, vol(level))
                   for level in rv.derisk_levels(config, bucket, slot, qsig, ssig)]
     weights = target_weights(config, bucket, qsig, slot, scale, spmo_sig=ssig, level_scales=levels)

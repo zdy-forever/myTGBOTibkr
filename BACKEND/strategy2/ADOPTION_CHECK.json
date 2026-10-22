@@ -1,6 +1,6 @@
 {
-  "version": "strategy2-G2-SCHD20-20261021",
-  "comparison": "Frozen audited SCHD20 original baseline; target/classifier parity only, not live fills or future returns.",
+  "version": "strategy2-G2-SCHD20-direct-vol20-20261022",
+  "comparison": "Selected direct_v20 research: SCHD20 floor, STRONG_UP volatility parameter20%, direct SCHD. Target/classifier parity only, not live fills or future returns.",
   "first": "2012-04-24",
   "last": "2026-10-19",
   "sessions": 3643,
@@ -10,10 +10,11 @@
     "DOWN": 307,
     "STRONG_DOWN": 44
   },
-  "max_target_weight_error": 7.327471962526033e-15,
+  "max_target_weight_error": 4.3298697960381105e-15,
   "source_files": {
-    "/students/u7782042/auto-quant/strategy2/research/schd20_robust_results/cache/long.pkl": "5fc7131ffa26cc6eb6e2dbe85173e3f08005856ae20aa8649b6e1306c5e9e100",
-    "/students/u7782042/auto-quant/strategy2/research/schd20_reentry_results/ledger_long_base20_baseline.parquet": "d8ee375cfb9f168f3cce1f9d06828a8d9373ecbd63c841725cfd2170e6ba5a68",
-    "/students/u7782042/myTGBOTibkr/BACKEND/strategy2/tests/verify_research_parity.py": "555db9850c527fca2eb804e5ad27e6ccb157e9f6237dd29608207ba4e86eb333"
+    "/students/u7782042/auto-quant/strategy2/research/etf_location_results/cache/panels.pkl": "20cecfc229abb4025c58f37588cec7e6641106dddac3610ada7e0978ac4d4f1e",
+    "/students/u7782042/auto-quant/strategy2/research/schd_direct_sweep_results/cache/ledger_long_base20_direct_v20.parquet": "edc6aa0fbcebad841d699d4ee8e6bd01906b4585402cddca47d58f99b15c1915",
+    "/students/u7782042/auto-quant/strategy2/research/schd_direct_sweep_results/SOURCES.json": "b226d5cc3e20faea2f82d0dca38689bfbec1ff17775bae81a57e2f3696f702da",
+    "/students/u7782042/myTGBOTibkr/BACKEND/strategy2/tests/verify_research_parity.py": "720aeaf44b2e8b6600cf8b386a0973d5153070cde6089e7e84a1ffc55eccb012"
   }
 }
