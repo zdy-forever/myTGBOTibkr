@@ -120,7 +120,7 @@ _PREMIUM_MENU = _REGISTERED_MENU + [
     ("strategy1_off", "停用策略 1"), ("strategy2", "启用策略 2：G2 趋势 ETF 轮动"),
     ("strategy2_off", "停用策略 2"), ("check2", "仅检查策略 2：趋势与操作"),
     ("strategy1_pool", "修改策略 1 股票池"),
-    ("check", "检查全部已启用策略"), ("check1", "仅检查策略 1：排名、总分与建议"),
+    ("check", "检查全部已启用策略"), ("check1", "仅检查策略 1：排名、评分明细与建议"),
     ("portfolio", "查看我的持仓"),
     ("add", "添加持仓"), ("edit", "修改持仓"), ("remove", "删除持仓"),
     ("cash", "修改现金"), ("import", "导入 CSV"), ("export", "导出 CSV"),

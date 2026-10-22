@@ -46,6 +46,32 @@ def test_candidate_and_holding_scores_match_the_actual_user_scoring():
     assert '0–100' in text and '分数高不代表一定买入' in text
 
 
+def test_breakdown_matches_native_component_scales_and_reversed_p_for_both_tables():
+    run = make_run()
+    scores = user_scores(run, {'AAA': 100})
+    data = {'status': 'no_candidates', 'summary': {'equity': 100, 'cash': 0}, 'signals': [], 'notes': []}
+    text = render_check(run, scores, {'AAA': 100}, data, 0)
+    candidates, holdings = text.split('你的持仓排名')
+    for section in [candidates, holdings]:
+        lines = section.splitlines()
+        index = next(i for i, line in enumerate(lines) if 'AAA ' in line)
+        first, second = lines[index+1:index+3]
+        assert first == '    P 20.0/30  V 20.0/25  F 10.0/15'
+        assert second.removesuffix('</pre>') == f"    G 15.0/15  D {scores['AAA']['d_native']:.1f}/10  Q 5.0/5"
+    assert '分项不直接相加' in text and 'P显示反向处理后的分值' in text
+    # The renderer must not change any of the native scores used for selection.
+    assert scores['AAA']['p_native'] == 10.0
+
+
+def test_empty_portfolio_breakdown_shows_real_diversification_points():
+    run = make_run()
+    scores = user_scores(run, {})
+    data = {'status': 'no_candidates', 'summary': {'equity': 100, 'cash': 100}, 'signals': [], 'notes': []}
+    text = render_check(run, scores, {}, data, 0)
+    assert scores['AAA']['d_native'] == 10
+    assert 'D 10.0/10' in text
+
+
 def test_unscored_holdings_do_not_receive_fabricated_zero_scores():
     run = make_run()
     scores = user_scores(run, {'AAA': 100})
@@ -74,6 +100,13 @@ def test_long_scored_holdings_are_split_without_losing_rows_or_breaking_html():
         rows = [line for line in joined.splitlines() if f'{symbol} ' in line]
         assert len(rows) == (2 if i < 10 else 1)
         assert all(f"{scores[symbol]['total']:.1f} 分" in row for row in rows)
+    # Each stock's two component lines stay on its page with the stock and total.
+    for page in pages:
+        lines = page.splitlines()
+        for i, line in enumerate(lines):
+            if 'STOCK' in line:
+                assert lines[i+1].startswith('    P ')
+                assert lines[i+2].startswith('    G ')
 
 
 async def test_manual_check_delivers_all_score_pages(factory, accounts, monkeypatch):

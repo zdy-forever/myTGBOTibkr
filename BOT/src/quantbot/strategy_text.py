@@ -1,6 +1,7 @@
 """Chinese rendering of one user's strategy results, in Telegram HTML (bold headings, aligned <pre> tables). Every dynamic piece goes through html.escape.
 `signal_line` is plain text and is what user_signals.recommendation stores.
-Manual S1 checks show actual total scores; rule details and component values stay private."""
+Manual S1 checks show actual totals and native component points as requested;
+decision thresholds and scoring formulas stay private."""
 from __future__ import annotations
 
 import math
@@ -66,6 +67,22 @@ def render_user_signals(data: dict) -> str:
     return "\n".join(lines)
 
 
+def _score_details(sc: dict) -> str:
+    """Native component scales, matching the backend's reversed-P ranking view."""
+    from quant_strategy.logic import G_POINTS, NATIVE
+
+    def points(key, *, reverse=False):
+        value = sc.get(key)
+        if value is None or not math.isfinite(value):
+            return '—'
+        if reverse:
+            value = NATIVE['P'] - value
+        return f'{value:.1f}'
+
+    return (f"    P {points('p_native', reverse=True)}/30  V {points('v_native')}/25  F {points('f_native')}/15\n"
+            f"    G {G_POINTS:.1f}/15  D {points('d_native')}/10  Q {points('q_native')}/5")
+
+
 def render_check(run, scores: dict, held_values: dict, data: dict, min_buy_score: float, top: int = 10) -> str:
     """/check for one user. `scores` = that user's scores for every scored stock (their own D included), `data` = UserSignals.to_dict()."""
     total_held = sum(held_values.values())
@@ -80,17 +97,18 @@ def render_check(run, scores: dict, held_values: dict, data: dict, min_buy_score
         ok = symbol in buyable if buyable is not None else sc["gate_ok"] and sc["total"] >= min_buy_score
         flag = "📌" if symbol in held_values else ("✅" if ok else "🔒")
         held_note = f"  持仓{held_values[symbol] / stock_value:.0%}" if symbol in held_values else ""
-        return f"{rank[symbol]:>2}  {flag} {esc(symbol):<6}  {sc['total']:5.1f} 分{held_note}"
+        return f"{rank[symbol]:>2}  {flag} {esc(symbol):<6}  {sc['total']:5.1f} 分{held_note}\n{_score_details(sc)}"
 
     updated = datetime.fromisoformat(run.finished_at or run.started_at)
     updated = (updated if updated.tzinfo else updated.replace(tzinfo=UTC)).astimezone(ZoneInfo("Asia/Shanghai"))
     lines = ["📊 <b>策略检查</b>", f"📅 行情日期 {esc(run.as_of_bar or '无')}\n更新于 {updated:%Y-%m-%d %H:%M}（北京时间）", "",
              f"🏆 <b>排名前 {min(top, len(ranked))}</b>（共 {len(ranked)} 只参与排名）",
              "<i>评分为策略总分（0–100），按你当前的组合计算；分数高不代表一定买入。</i>",
+             "<i>分项满分：P /30、V /25、F /15、G /15、D /10、Q /5。P显示反向处理后的分值；总分经权重换算，分项不直接相加。</i>",
              "<pre>" + "\n".join(row(s, sc) for s, sc in ranked[:top]) + "</pre>"]
     mine = sorted(((s, scores[s]) for s in held_values if s in scores), key=lambda kv: (-kv[1]["total"], kv[0]))
     if mine:
-        rows = [f"{i:>2}  📌 {esc(s):<6}  {sc['total']:5.1f} 分  持仓{held_values[s] / stock_value:.0%}" for i, (s, sc) in enumerate(mine, 1)]
+        rows = [f"{i:>2}  📌 {esc(s):<6}  {sc['total']:5.1f} 分  持仓{held_values[s] / stock_value:.0%}\n{_score_details(sc)}" for i, (s, sc) in enumerate(mine, 1)]
         lines += ["💼 <b>你的持仓排名</b>", "<i>占比按股票市值计算，不含现金</i>", "<pre>" + "\n".join(rows) + "</pre>"]
     unscored = [s for s in held_values if s not in scores]
     if unscored:
@@ -106,8 +124,14 @@ def check_pages(text: str, limit: int = 3800) -> list[str]:
     blocks = []
     for part in re.split(r'(<pre>.*?</pre>)', text, flags=re.S):
         if part.startswith('<pre>'):
-            rows = []
+            records = []
             for row in part[5:-6].splitlines():
+                if row.startswith('    ') and records:
+                    records[-1] += '\n' + row
+                else:
+                    records.append(row)
+            rows = []
+            for row in records:
                 if rows and len('\n'.join(rows + [row])) + 11 > limit:
                     blocks.append('<pre>' + '\n'.join(rows) + '</pre>')
                     rows = []

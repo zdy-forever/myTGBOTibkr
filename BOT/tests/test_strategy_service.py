@@ -549,7 +549,7 @@ async def test_start_explains_how_to_bind_and_typed_numbers_get_a_reminder_inste
     assert "不能手动输入" in message.texts[1] and "分享我的手机号" in message.texts[1]
 
 
-def test_no_rule_details_or_component_values_reach_the_user():
+def test_scoring_breakdown_does_not_disclose_decision_thresholds_or_formulas():
     from quantbot import help_text
     from quantbot.strategy_text import render_check, render_cooldowns, render_user_signals
 
