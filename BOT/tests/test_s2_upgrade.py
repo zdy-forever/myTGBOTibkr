@@ -20,7 +20,7 @@ def only_s2(factory, user_id):
 
 
 @pytest.mark.parametrize('cached_today', [True, False])
-@pytest.mark.parametrize('old_version', ['strategy2-G2-20261020', 'strategy2-G2-SCHD20-20261021'])
+@pytest.mark.parametrize('old_version', ['strategy2-G2-20261020', 'strategy2-G2-SCHD20-20261021', 'strategy2-G2-SCHD20-direct-vol20-20261022'])
 def test_old_snapshot_replaced_and_never_passed_to_new_classifier(factory, monkeypatch, cached_today, old_version):
     today = date(2026, 10, 20)
     old = {'version': old_version, 'weights': {'GPIQ': 1}}
@@ -45,7 +45,7 @@ def test_old_snapshot_replaced_and_never_passed_to_new_classifier(factory, monke
         assert len(rows) == 1 and rows[0].data == current
 
 
-@pytest.mark.parametrize('old_version', [None, 'strategy2-G2-SCHD20-20261021'])
+@pytest.mark.parametrize('old_version', [None, 'strategy2-G2-SCHD20-20261021', 'strategy2-G2-SCHD20-direct-vol20-20261022'])
 async def test_stale_ready_report_is_not_delivered_and_is_recomputed(factory, old_version):
     uid = add_user(factory, 1)
     only_s2(factory, uid)

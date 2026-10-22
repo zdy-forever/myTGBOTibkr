@@ -1,6 +1,6 @@
 {
-  "version": "strategy2-G2-SCHD20-direct-vol20-20261022",
-  "comparison": "Selected direct_v20 research: SCHD20 floor, STRONG_UP volatility parameter20%, direct SCHD. Target/classifier parity only, not live fills or future returns.",
+  "version": "strategy2-G2-up15-side20-direct-vol20-20261022",
+  "comparison": "Selected balanced profile: up SCHD15 floor, sideways SCHD20/SGOV80, attack volatility20%, direct SCHD. Target/classifier parity only, not live fills or future returns.",
   "first": "2012-04-24",
   "last": "2026-10-19",
   "sessions": 3643,
@@ -10,11 +10,11 @@
     "DOWN": 307,
     "STRONG_DOWN": 44
   },
-  "max_target_weight_error": 4.3298697960381105e-15,
+  "max_target_weight_error": 1.5543122344752192e-15,
   "source_files": {
-    "/students/u7782042/auto-quant/strategy2/research/etf_location_results/cache/panels.pkl": "20cecfc229abb4025c58f37588cec7e6641106dddac3610ada7e0978ac4d4f1e",
-    "/students/u7782042/auto-quant/strategy2/research/schd_direct_sweep_results/cache/ledger_long_base20_direct_v20.parquet": "edc6aa0fbcebad841d699d4ee8e6bd01906b4585402cddca47d58f99b15c1915",
-    "/students/u7782042/auto-quant/strategy2/research/schd_direct_sweep_results/SOURCES.json": "b226d5cc3e20faea2f82d0dca38689bfbec1ff17775bae81a57e2f3696f702da",
-    "/students/u7782042/myTGBOTibkr/BACKEND/strategy2/tests/verify_research_parity.py": "720aeaf44b2e8b6600cf8b386a0973d5153070cde6089e7e84a1ffc55eccb012"
+    "/students/u7782042/auto-quant/strategy2/research/schd20_robust_results/cache/long.pkl": "5fc7131ffa26cc6eb6e2dbe85173e3f08005856ae20aa8649b6e1306c5e9e100",
+    "/students/u7782042/auto-quant/strategy2/reports/data_balanced15/cache/ledger_actual_base.parquet": "06a708b458a6d9eaf7508730fbce8384d26ed83088b176bf74f367255a21b347",
+    "/students/u7782042/auto-quant/strategy2/reports/data_balanced15/PROVENANCE.json": "feb3afb53d76ce321fe36d62ffd53da785f22d77016df50e1c4e9a88330f8b1f",
+    "/students/u7782042/myTGBOTibkr/BACKEND/strategy2/tests/verify_research_parity.py": "616f97f726997c43a6153d5a8006390027a2f880328d43a0f122d327ac26584e"
   }
 }

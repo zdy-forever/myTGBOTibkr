@@ -12,14 +12,15 @@ from sgs.live import TICKERS, VERSION, cfg, income_sleeve, risk_scale, target_we
 
 
 def verify(research, output):
-    cache=research/'etf_location_results/cache/panels.pkl'
-    reference=research/'schd_direct_sweep_results/cache/ledger_long_base20_direct_v20.parquet'
-    provenance=research/'schd_direct_sweep_results/SOURCES.json'
-    assert hashlib.sha256(cache.read_bytes()).hexdigest()==json.loads(provenance.read_text())['sha256']
+    cache=research/'schd20_robust_results/cache/long.pkl'
+    reference=research.parent/'reports/data_balanced15/cache/ledger_actual_base.parquet'
+    provenance=research.parent/'reports/data_balanced15/PROVENANCE.json'
+    assert hashlib.sha256(cache.read_bytes()).hexdigest()==json.loads(provenance.read_text())['inputs']['research/schd20_robust_results/cache/long.pkl']
     with cache.open('rb') as f:
         data=pickle.load(f)
     ledger=pd.read_parquet(reference)
-    bars,signals,first,end=data['bars'],data['signals'],ledger.index[0],ledger.index[-1]
+    bars,signals,_,_=data['market']
+    first,end=ledger.index[0],ledger.index[-1]
     close=bars.pivot(index='session',columns='symbol',values='close')[list(TICKERS)]
     split=bars.pivot(index='session',columns='symbol',values='split_ratio')[list(TICKERS)].fillna(1)
     dividend=bars.pivot(index='session',columns='symbol',values='dividend')[list(TICKERS)].fillna(0)
@@ -59,7 +60,7 @@ def verify(research, output):
         assert delta<1e-10,(day,delta,weights)
         checked+=1; regimes[bucket]=regimes.get(bucket,0)+1
     assert checked==len(ledger)
-    result=dict(version=VERSION,comparison='Selected direct_v20 research: SCHD20 floor, STRONG_UP volatility parameter20%, direct SCHD. Target/classifier parity only, not live fills or future returns.',
+    result=dict(version=VERSION,comparison='Selected balanced profile: up SCHD15 floor, sideways SCHD20/SGOV80, attack volatility20%, direct SCHD. Target/classifier parity only, not live fills or future returns.',
         first=str(first.date()),last=str(end.date()),sessions=checked,regimes=regimes,max_target_weight_error=error,
         source_files={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in [cache,reference,provenance,Path(__file__)]})
     output.write_text(json.dumps(result,indent=2))

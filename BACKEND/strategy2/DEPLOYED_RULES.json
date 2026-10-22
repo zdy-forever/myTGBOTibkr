@@ -1,9 +1,8 @@
 {
-  "version": "strategy2-G2-SCHD20-direct-vol20-20261022",
+  "version": "strategy2-G2-up15-side20-direct-vol20-20261022",
   "adopted_on": "2026-10-22",
-  "user_selection": "SCHD20 floor; STRONG_UP attack volatility parameter20%; rejected TQQQ directly to SCHD; other regimes unchanged",
+  "user_selection": "Balanced: STRONG_UP SCHD floor15%; SIDEWAYS20%SCHD80%SGOV; DOWN/STRONG_DOWN20%SCHD80%SGOV. Attack vol20%, direct SCHD.",
   "income_ticker": "SCHD",
-  "income_target_floor": 0.2,
   "signal_ticker": "QQQ",
   "active_tickers": [
     "QQQ",
@@ -26,19 +25,19 @@
     "GPIQ"
   ],
   "regime_rules": {
-    "STRONG_UP": "TQQQ=.8*clip(3*.20/prior20closeTQQQvol,.3,1); remainder directly SCHD; no SPMO/QQQM cascade",
-    "SIDEWAYS": "100% SCHD target",
+    "STRONG_UP": "TQQQ=.85*clip(3*.20/prior20closeTQQQvol,.3,1); remainder directly SCHD; floor15%",
+    "SIDEWAYS": "20% SCHD +80% SGOV target",
     "DOWN": "20% SCHD + SGOV discretionary sleeve",
     "STRONG_DOWN": "20% SCHD + SGOV discretionary sleeve"
   },
   "research_candidates_enabled": [],
-  "execution_version": "fractional-v3-schd20-direct-vol20",
+  "execution_version": "fractional-v4-up15-side20-direct-vol20",
   "execution": "Read-only premarket suggestions from previous complete close;6dp fractional shares,20bps per-side budget plus commission,5%band,13USD reserve. No automatic orders or assumed fills.",
   "base_core_archive": "FROZEN_RULES.json",
   "income_role_mapping": {
     "GPIQ": "SCHD"
   },
-  "mapping_scope": "Internal income role maps to SCHD; only STRONG_UP overrides attack volatility and routing. Archived CASCADE setting does not apply to STRONG_UP in the live adapter.",
+  "mapping_scope": "Internal income role maps to SCHD; live overrides STRONG_UP floor/attack volatility/direct routing and SIDEWAYS allocation. DOWN/STRONG_DOWN unchanged.",
   "migration": "0016_daily_report_version; snapshots and daily reports invalidated by VERSION",
   "config_snapshot": {
     "V5_STRONG_UP_ASSET": "TQQQ",
@@ -146,16 +145,24 @@
     "OVERRIDES": {},
     "START": "2023-10-30",
     "END": "2026-10-16",
-    "LIVE_STRONG_UP_VOL_TARGET_ANNUAL": 0.2
+    "LIVE_STRONG_UP_VOL_TARGET_ANNUAL": 0.2,
+    "LIVE_STRONG_UP_SCHD_FLOOR": 0.15,
+    "LIVE_SIDEWAYS_SCHD_WEIGHT": 0.2
   },
   "source_sha256": {
-    "sgs/live.py": "412d91777cc4dff4d205babaad85c0e31150920612fe2ce3785208817bbad797",
+    "sgs/live.py": "61fc697399115d9a9d84a3ba03598e7a4b2d03af35711bb251b33638a5c0a414",
     "sgs/config.py": "03cf745c39cf1977813da1cea4a037651aaab00cbfe868267bbe4a5055266b14",
     "sgs/config_v5.py": "7fcb6edbe746feaeb3925ebbde8b536b82bccc245c3ee39b0f6d2ea2c6a1d89d",
     "sgs/regime_v5.py": "401e024943ad54f288fbae8f032a45ba63568f5f02f67727cca01a47548767a8",
     "sgs/state_machine.py": "ad56d1f83c9cee08e66b2394e3bc2301f7b94491ae460aabdf5e133edd18ea37"
   },
   "attack_volatility_parameter": 0.2,
-  "research_reference": "schd_direct_sweep: direct_v20",
-  "account_funding": "Actual user allocated holdings and cash; STARTING_CASH_USD and MONTHLY_DEPOSIT_USD are archived research defaults, never automatic live funding."
+  "research_reference": "reports/data_balanced15; up15-side20",
+  "account_funding": "Actual user allocated holdings and cash; STARTING_CASH_USD and MONTHLY_DEPOSIT_USD are archived research defaults, never automatic live funding.",
+  "income_target_floor_by_regime": {
+    "STRONG_UP": 0.15,
+    "SIDEWAYS": 0.2,
+    "DOWN": 0.2,
+    "STRONG_DOWN": 0.2
+  }
 }

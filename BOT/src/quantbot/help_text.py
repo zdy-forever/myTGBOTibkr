@@ -53,8 +53,8 @@ STRATEGY1_WELCOME = """📈 <b>策略 1：月度定投个股(加强型 QQQ)</b>
 
 STRATEGY2_WELCOME = """📈 <b>策略 2：G2 趋势 ETF 轮动</b>
 
-SCHD最低目标20%；上涨用动态TQQQ，降低进攻仓位时直接转向SCHD。
-震荡目标100% SCHD，下跌/强下跌通常为20% SCHD＋80% SGOV。已有GPIQ只建议卖出转仓，不再买入。
+上涨时SCHD最低目标15%，搭配动态TQQQ；降低进攻仓位时直接转向SCHD。
+震荡、下跌及强下跌目标为20% SCHD＋80% SGOV。已有GPIQ只建议卖出转仓，不再买入。
 
 1. /add 或 /import 录入现有 ETF 持仓；没有持仓可跳过。
 2. 发 <code>CASH 2 300USD</code> 设置本策略现金；或 <code>CASH 0 1000USD</code> 设置公共现金，再 /strategy_weights 分配比例。

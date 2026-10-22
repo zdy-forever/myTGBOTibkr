@@ -1,4 +1,4 @@
-"""Read-only SCHD20 G2 adapter. Closed bars only; no research runner or orders."""
+"""Read-only balanced G2 adapter. Closed bars only; no research runner or orders."""
 from dataclasses import asdict
 from datetime import timedelta
 from decimal import Decimal, ROUND_DOWN
@@ -15,9 +15,9 @@ LEGACY_TICKERS = ('GPIQ',)
 MANAGED_TICKERS = TICKERS + LEGACY_TICKERS
 LABELS = {'STRONG_UP': '强上涨', 'UP': '上涨', 'SIDEWAYS': '震荡',
           'DOWN': '下跌', 'STRONG_DOWN': '强下跌'}
-VERSION = 'strategy2-G2-SCHD20-direct-vol20-20261022'
-PROFILE_LABEL = 'SCHD最低目标20% · 直达SCHD版'
-EXECUTION_VERSION = 'fractional-v3-schd20-direct-vol20'
+VERSION = 'strategy2-G2-up15-side20-direct-vol20-20261022'
+PROFILE_LABEL = '上涨SCHD下限15% · 震荡SCHD20% · 平衡版'
+EXECUTION_VERSION = 'fractional-v4-up15-side20-direct-vol20'
 SHARE_STEP = Decimal('0.000001')
 
 
@@ -26,7 +26,8 @@ def cfg():
     # GPIQ remains the frozen core's internal income-role name. Both its
     # targets AND volatility inputs are mapped to the actual SCHD instrument.
     config.update(V5_GPIQ_FLOOR=.2, V5_PROXIES={}, SLIPPAGE_PER_SIDE=.002,
-                  LIVE_STRONG_UP_VOL_TARGET_ANNUAL=.20)
+                  LIVE_STRONG_UP_VOL_TARGET_ANNUAL=.20,
+                  LIVE_STRONG_UP_SCHD_FLOOR=.15, LIVE_SIDEWAYS_SCHD_WEIGHT=.20)
     return config
 
 
@@ -52,12 +53,16 @@ def risk_scale(config, bucket, qsig, slot, volatility, sleeve):
 
 def target_weights(config, bucket, qsig, slot, scale, *, spmo_sig=None, level_scales=None):
     if bucket == 'STRONG_UP':
-        attack = (1 - config['V5_GPIQ_FLOOR']) * scale
+        attack = (1 - config['LIVE_STRONG_UP_SCHD_FLOOR']) * scale
         weights = {'TQQQ': attack, 'SCHD': 1 - attack}
+    elif bucket == 'SIDEWAYS':
+        income = config['LIVE_SIDEWAYS_SCHD_WEIGHT']
+        weights = {'SCHD': income, 'SGOV': 1 - income}
     else:
         weights = income_sleeve(rv.effective_weights_v5(
             config, bucket, qsig, slot, scale, spmo_sig=spmo_sig, level_scales=level_scales))
-    if (not set(weights) <= set(TICKERS) or weights.get('SCHD', 0) < .2-1e-10
+    floor = config['LIVE_STRONG_UP_SCHD_FLOOR'] if bucket == 'STRONG_UP' else config['V5_GPIQ_FLOOR']
+    if (not set(weights) <= set(TICKERS) or weights.get('SCHD', 0) < floor-1e-10
             or any(not math.isfinite(w) or w < 0 for w in weights.values())
             or sum(weights.values()) > 1+1e-10):
         raise ValueError('S2 目标配置无效，暂停建议。')

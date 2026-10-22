@@ -12,10 +12,10 @@ from sgs.live import (
 
 
 @pytest.mark.parametrize('bucket,expected', [
-    ('SIDEWAYS', {'SCHD': 1.}),
+    ('SIDEWAYS', {'SCHD': .2, 'SGOV': .8}),
     ('DOWN', {'SCHD': .2, 'SGOV': .8}),
     ('STRONG_DOWN', {'SCHD': .2, 'SGOV': .8}),
-    ('STRONG_UP', {'SCHD': .2, 'TQQQ': .8}),
+    ('STRONG_UP', {'SCHD': .15, 'TQQQ': .85}),
 ])
 def test_adopted_targets_for_each_active_regime(bucket, expected):
     actual = target_weights(cfg(), bucket, {'ratio': 1.06}, 'SPMO', 1.)
@@ -25,7 +25,7 @@ def test_adopted_targets_for_each_active_regime(bucket, expected):
 def test_strong_up_rejected_attack_goes_directly_to_schd():
     actual = target_weights(cfg(), 'STRONG_UP', {'ratio': 1.06}, 'SPMO', .5,
                             level_scales=[.5, .5])
-    assert actual == pytest.approx({'SCHD': .6, 'TQQQ': .4})
+    assert actual == pytest.approx({'SCHD': .575, 'TQQQ': .425})
     assert not {'GPIQ', 'MQQQ', 'QQQP'} & actual.keys()
     assert income_sleeve({'GPIQ': .2, 'SCHD': .1, 'TQQQ': .7}) == pytest.approx({'SCHD': .3, 'TQQQ': .7})
 
@@ -37,7 +37,7 @@ def test_attack_parameter_is_twenty_percent_with_tqqq_leverage(vol, expected):
     assert config['V5_VOL_TARGET_ANNUAL'] == .15  # Do not mutate other buckets.
 
 
-@pytest.mark.parametrize('bucket', ['UP', 'SIDEWAYS', 'DOWN', 'STRONG_DOWN'])
+@pytest.mark.parametrize('bucket', ['UP', 'DOWN', 'STRONG_DOWN'])
 def test_other_regimes_preserve_native_sizing_and_weights(bucket):
     from sgs import regime_v5 as rv
     config, qsig = cfg(), {'ratio': 1.04}
@@ -85,7 +85,7 @@ def test_snapshot_direct_schd_does_not_use_income_volatility_to_cascade():
     assert set(volatile.calls[-1][0]) == set(MANAGED_TICKERS)
 
 
-@pytest.mark.parametrize('old_version', ['strategy2-G2-20261020', 'strategy2-G2-SCHD20-20261021'])
+@pytest.mark.parametrize('old_version', ['strategy2-G2-20261020', 'strategy2-G2-SCHD20-20261021', 'strategy2-G2-SCHD20-direct-vol20-20261022'])
 def test_old_same_date_snapshot_is_rewarmed_not_returned(old_version):
     actual = snapshot(Market(), date(2026, 10, 20),
                       {'version': old_version, 'as_of': '2026-10-19', 'state': {'obsolete': True}})
@@ -141,3 +141,16 @@ def test_missing_legacy_quote_blocks_only_legacy_exposure():
         recommendations(data, {'GPIQ': 1}, 100)
     with pytest.raises(ValueError, match='无效'):
         recommendations(dict(data, weights={'GPIQ': 1}), {}, 100)
+
+
+@pytest.mark.parametrize('scale', [.3, .5, 1.])
+def test_sideways_balanced_target_does_not_depend_on_attack_scaling(scale):
+    assert target_weights(cfg(), 'SIDEWAYS', {'ratio': 1.}, 'SPMO', scale) == pytest.approx({'SCHD': .2, 'SGOV': .8})
+
+
+def test_new_up_floor_is_allowed_without_lowering_downside_floor():
+    config = cfg()
+    assert config['V5_GPIQ_FLOOR'] == .2
+    assert target_weights(config, 'STRONG_UP', {'ratio': 1.06}, 'SPMO', 1.)['SCHD'] == pytest.approx(.15)
+    for bucket in ['DOWN', 'STRONG_DOWN']:
+        assert target_weights(config, bucket, {'ratio': .8}, 'SPMO', 1.) == pytest.approx({'SCHD': .2, 'SGOV': .8})
