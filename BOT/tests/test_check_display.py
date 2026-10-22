@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from quantbot import strategy_service as svc
 from quantbot.models import UserSignal
-from quantbot.strategy_text import render_check, render_user_signals
+from quantbot.strategy_text import check_pages, render_check, render_user_signals
 from quant_strategy.signals import user_scores
 from tests.test_strategy_service import SETTINGS, FakeBot, add_user, fresh_run, make_run
 
@@ -27,6 +27,71 @@ def test_buy_flags_follow_actual_candidates_without_disclosing_rules():
     assert '✅ AAA' in text and '🔒 BBB' in text
     assert '不等于冷却期' in text
     assert all(secret not in text for secret in ('GATE', 'P3', '门槛', '180', '365'))
+
+
+def test_candidate_and_holding_scores_match_the_actual_user_scoring():
+    run = make_run()
+    held = {'AAA': 300, 'BBB': 100}
+    scores = user_scores(run, held)
+    data = {'status': 'no_candidates', 'summary': {'equity': 1000, 'cash': 600, 'buyable_symbols': []},
+            'signals': [], 'notes': []}
+    text = render_check(run, scores, held, data, 0)
+    candidates, holdings = text.split('你的持仓排名')
+    for symbol, score in scores.items():
+        row = next(line for line in candidates.splitlines() if f'{symbol} ' in line)
+        assert f"{score['total']:.1f} 分" in row
+    for symbol in held:
+        row = next(line for line in holdings.splitlines() if f'{symbol} ' in line)
+        assert f"{scores[symbol]['total']:.1f} 分" in row
+    assert '0–100' in text and '分数高不代表一定买入' in text
+
+
+def test_unscored_holdings_do_not_receive_fabricated_zero_scores():
+    run = make_run()
+    scores = user_scores(run, {'AAA': 100})
+    data = {'status': 'no_candidates', 'summary': {'equity': 200, 'cash': 0}, 'signals': [], 'notes': []}
+    text = render_check(run, scores, {'AAA': 100, 'MISSING': 100}, data, 0)
+    assert '暂无法评分的持仓（必要数据不足）：MISSING' in text
+    assert not any('MISSING' in line and ' 分' in line for line in text.splitlines())
+
+
+def test_long_scored_holdings_are_split_without_losing_rows_or_breaking_html():
+    from tests.test_strategy_service import _assert_valid_telegram_html
+
+    run = make_run()
+    names = [f'STOCK{i:04d}' for i in range(200)]
+    scores = {s: {'total': 90 - i / 10, 'gate_ok': True} for i, s in enumerate(names)}
+    run.symbols = dict.fromkeys(names)
+    held = dict.fromkeys(names, 100)
+    data = {'status': 'no_candidates', 'summary': {'equity': 20000, 'cash': 0}, 'signals': [], 'notes': []}
+    text = render_check(run, scores, held, data, 0)
+    pages = check_pages(text)
+    assert len(pages) > 1
+    for page in pages:
+        _assert_valid_telegram_html(page)
+    joined = '\n'.join(pages)
+    for i, symbol in enumerate(names):
+        rows = [line for line in joined.splitlines() if f'{symbol} ' in line]
+        assert len(rows) == (2 if i < 10 else 1)
+        assert all(f"{scores[symbol]['total']:.1f} 分" in row for row in rows)
+
+
+async def test_manual_check_delivers_all_score_pages(factory, accounts, monkeypatch):
+    from quantbot import bot
+    from tests.test_strategy_service import FakeApp, handler_args
+
+    uid = add_user(factory, 1)
+    with factory.begin() as session:
+        svc.store_run(session, fresh_run())
+    # Retain the real handler permissions/freshness path; isolate only its rendered content.
+    text = '策略 1\n<pre>' + '\n'.join(f'STOCK{i:04d} 80.0 分' for i in range(400)) + '</pre>'
+    monkeypatch.setattr(svc, 'strategy_settings', lambda: SETTINGS)
+    monkeypatch.setattr(svc, 'check_text', lambda session, user_id, row, settings: text if user_id == uid else 'wrong user')
+    app = FakeApp(factory, accounts)
+    update, context, message = handler_args(factory, accounts, 1, app)
+    await bot.check_one(update, context)
+    assert message.texts == check_pages(text)
+    assert len(message.texts) > 1 and not app.tasks
 
 
 def test_own_outside_holdings_appear_only_in_holdings_ranking(factory):

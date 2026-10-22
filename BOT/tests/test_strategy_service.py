@@ -848,15 +848,20 @@ async def test_check_still_works_after_the_monthly_push_has_been_recorded(factor
     assert result["reused"] and result["status"] == "completed"
 
 
-def test_users_see_ranks_never_scores():
+def test_checks_show_actual_total_scores_while_recommendations_stay_concise():
     from quantbot.strategy_text import render_check, render_user_signals, signal_line
 
     run = make_run()
     scores = {s: {"total": 91.7 - 3.1 * i, "gate_ok": i != 1, "p_native": 10.0, "v_native": 20.0, "f_native": 9.0, "d_native": 8.0, "q_native": 5.0} for i, s in enumerate(NAMES)}
     sig = {"kind": "MONTHLY_BUY", "action": "BUY", "symbol": "CCC", "amount_usd": 100.0, "est_shares": 1.0, "score": 85.6, "rank": 3, "components": {}}
     data = {"status": "ok", "strategy": {"name": "x", "version": "v"}, "summary": {"equity": 1000.0, "cash": 500.0, "top_candidates": [("AAA", 91.7), ("CCC", 85.5)]}, "signals": [sig], "notes": []}
-    text = render_check(run, scores, {"EEE": 100.0}, data, 0) + render_user_signals(data) + signal_line(sig)
+    text = render_check(run, scores, {"EEE": 100.0}, data, 0)
+    assert all(score in text for score in ("91.7", "88.6", "85.5", "79.3"))
+    assert "评分为策略总分" in text
+    suggestions = render_user_signals(data) + signal_line(sig)
     for hidden in ("91.7", "88.6", "85.5", "85.6", "79.3", "75.5", "评分"):
+        assert hidden not in suggestions, hidden
+    for hidden in ("85.6", "75.5", "p_native", "d_native"):
         assert hidden not in text, hidden
     assert " 1  ✅ AAA" in text and "排名前" in text
     assert all(hidden not in text for hidden in ("排名第 3", "AAA › CCC", "本月买入", "排名靠前的可买入"))

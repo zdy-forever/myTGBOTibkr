@@ -120,7 +120,7 @@ _PREMIUM_MENU = _REGISTERED_MENU + [
     ("strategy1_off", "停用策略 1"), ("strategy2", "启用策略 2：G2 趋势 ETF 轮动"),
     ("strategy2_off", "停用策略 2"), ("check2", "仅检查策略 2：趋势与操作"),
     ("strategy1_pool", "修改策略 1 股票池"),
-    ("check", "检查全部已启用策略"), ("check1", "仅检查策略 1：排名与建议"),
+    ("check", "检查全部已启用策略"), ("check1", "仅检查策略 1：排名、总分与建议"),
     ("portfolio", "查看我的持仓"),
     ("add", "添加持仓"), ("edit", "修改持仓"), ("remove", "删除持仓"),
     ("cash", "修改现金"), ("import", "导入 CSV"), ("export", "导出 CSV"),
@@ -1304,6 +1304,7 @@ async def check_one(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Today's scores and suggestions for the CALLER only (own portfolio, own D scores). If the shared data is older than 12 hours it is shown with a notice while a refresh runs in the
     background; the caller then gets the fresh result automatically. Suggestions only: nothing is ordered."""
     from . import strategy_service as strategy
+    from .strategy_text import check_pages
 
     app = context.application
     try:
@@ -1323,14 +1324,17 @@ async def check_one(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("策略 1 · " + str(exc))
         return
     if fresh:
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+        for page in check_pages(text):
+            await update.message.reply_text(page, parse_mode=ParseMode.HTML)
         return
     notice = ("\n\n⏳ 策略 1 · 以上数据不是最新的，正在后台更新（首次可能要几分钟），完成后会自动把最新结果发给你。" if text else "⏳ 策略 1 · 还没有可用的数据，正在生成（首次可能要几分钟），完成后会自动发给你。")
     if recent is not None and not app.bot_data.get("check_job_running"):
-        await update.message.reply_text((text + "\n\n" if text else "") + "策略 1 · 刚刚有一次更新尝试，请 30 分钟后再用 /check1。", parse_mode=ParseMode.HTML)
+        for page in check_pages((text + "\n\n" if text else "") + "策略 1 · 刚刚有一次更新尝试，请 30 分钟后再用 /check1。"):
+            await update.message.reply_text(page, parse_mode=ParseMode.HTML)
         return
     app.bot_data.setdefault("check_waiters", {})[user_id] = update.effective_user.id
-    await update.message.reply_text(text + notice, parse_mode=ParseMode.HTML)
+    for page in check_pages(text + notice):
+        await update.message.reply_text(page, parse_mode=ParseMode.HTML)
     if not app.bot_data.get("check_job_running"):
         app.bot_data["check_job_running"] = True
         app.create_task(_check_refresh_job(app), update=update)
@@ -1339,6 +1343,7 @@ async def check_one(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def _check_refresh_job(application) -> None:
     """Refresh the shared run once, then send each waiting user THEIR OWN fresh result."""
     from . import strategy_service as strategy
+    from .strategy_text import check_pages
 
     factory = application.bot_data["session_factory"]
     try:
@@ -1367,7 +1372,8 @@ async def _check_refresh_job(application) -> None:
                     with transaction(factory) as session:
                         row = strategy.latest_completed(session)
                         text = "✅ <b>已更新</b>\n\n" + strategy.check_text(session, user_id, row, strategy.strategy_settings())
-                await application.bot.send_message(telegram_id, text, parse_mode=ParseMode.HTML)
+                for page in check_pages(text):
+                    await application.bot.send_message(telegram_id, page, parse_mode=ParseMode.HTML)
             except Exception:
                 log.exception("could not deliver the refreshed check to one user")
     finally:

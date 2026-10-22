@@ -1,8 +1,10 @@
 """Chinese rendering of one user's strategy results, in Telegram HTML (bold headings, aligned <pre> tables). Every dynamic piece goes through html.escape.
-`signal_line` is plain text and is what user_signals.recommendation stores. No rule details and no component values are shown anywhere."""
+`signal_line` is plain text and is what user_signals.recommendation stores.
+Manual S1 checks show actual total scores; rule details and component values stay private."""
 from __future__ import annotations
 
 import math
+import re
 from datetime import UTC, datetime
 from html import escape as esc
 from zoneinfo import ZoneInfo
@@ -78,21 +80,63 @@ def render_check(run, scores: dict, held_values: dict, data: dict, min_buy_score
         ok = symbol in buyable if buyable is not None else sc["gate_ok"] and sc["total"] >= min_buy_score
         flag = "📌" if symbol in held_values else ("✅" if ok else "🔒")
         held_note = f"  持仓{held_values[symbol] / stock_value:.0%}" if symbol in held_values else ""
-        return f"{rank[symbol]:>2}  {flag} {esc(symbol):<6}{held_note}"
+        return f"{rank[symbol]:>2}  {flag} {esc(symbol):<6}  {sc['total']:5.1f} 分{held_note}"
 
     updated = datetime.fromisoformat(run.finished_at or run.started_at)
     updated = (updated if updated.tzinfo else updated.replace(tzinfo=UTC)).astimezone(ZoneInfo("Asia/Shanghai"))
     lines = ["📊 <b>策略检查</b>", f"📅 行情日期 {esc(run.as_of_bar or '无')}\n更新于 {updated:%Y-%m-%d %H:%M}（北京时间）", "",
-             f"🏆 <b>排名前 {min(top, len(ranked))}</b>（共 {len(ranked)} 只参与排名）", "<pre>" + "\n".join(row(s, sc) for s, sc in ranked[:top]) + "</pre>"]
+             f"🏆 <b>排名前 {min(top, len(ranked))}</b>（共 {len(ranked)} 只参与排名）",
+             "<i>评分为策略总分（0–100），按你当前的组合计算；分数高不代表一定买入。</i>",
+             "<pre>" + "\n".join(row(s, sc) for s, sc in ranked[:top]) + "</pre>"]
     mine = sorted(((s, scores[s]) for s in held_values if s in scores), key=lambda kv: (-kv[1]["total"], kv[0]))
     if mine:
-        rows = [f"{i:>2}  📌 {esc(s):<6} 持仓{held_values[s] / stock_value:.0%}" for i, (s, _) in enumerate(mine, 1)]
+        rows = [f"{i:>2}  📌 {esc(s):<6}  {sc['total']:5.1f} 分  持仓{held_values[s] / stock_value:.0%}" for i, (s, sc) in enumerate(mine, 1)]
         lines += ["💼 <b>你的持仓排名</b>", "<i>占比按股票市值计算，不含现金</i>", "<pre>" + "\n".join(rows) + "</pre>"]
     unscored = [s for s in held_values if s not in scores]
     if unscored:
         lines.append("⚪ 暂无法评分的持仓（必要数据不足）：" + esc("、".join(sorted(unscored))))
     lines += ["<i>✅符合买入条件　🔒暂不符合买入条件（不等于冷却期）　📌你已持有</i>", "", "━━━━━━━━━━━━━━", "", render_user_signals(data)]
     return "\n".join(lines)
+
+
+def check_pages(text: str, limit: int = 3800) -> list[str]:
+    """Split long checks on complete lines/table rows, retaining valid HTML."""
+    if len(text) <= limit:
+        return [text]
+    blocks = []
+    for part in re.split(r'(<pre>.*?</pre>)', text, flags=re.S):
+        if part.startswith('<pre>'):
+            rows = []
+            for row in part[5:-6].splitlines():
+                if rows and len('\n'.join(rows + [row])) + 11 > limit:
+                    blocks.append('<pre>' + '\n'.join(rows) + '</pre>')
+                    rows = []
+                rows.append(row)
+            if rows:
+                blocks.append('<pre>' + '\n'.join(rows) + '</pre>')
+        else:
+            for line in part.splitlines():
+                if len(line) > limit and '、' in line:
+                    group = ''
+                    for item in line.split('、'):
+                        if group and len(group) + len(item) + 1 > limit:
+                            blocks.append(group)
+                            group = ''
+                        group += ('、' if group else '') + item
+                    blocks.append(group)
+                else:
+                    blocks.append(line)
+    pages, current = [], ''
+    for block in blocks:
+        candidate = current + ('\n' if current else '') + block
+        if len(candidate) > limit and current:
+            pages.append(current)
+            current = block
+        else:
+            current = candidate
+    if current:
+        pages.append(current)
+    return pages
 
 
 def render_cooldowns(blocked: dict, protected: dict, now) -> str:
