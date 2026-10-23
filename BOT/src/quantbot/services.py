@@ -49,7 +49,7 @@ def decimal_value(value: str | int | Decimal, *, positive: bool = False,
     return result
 
 
-MONEY_RE = re.compile(r"^(?:(?P<sym>\$|US\$)\s*)?(?P<num>\d+(?:\.\d+)?|\.\d+)\s*(?P<cur>[A-Za-z]{3}|美元|美金)?$|^(?P<cur2>[A-Za-z]{3})\s*(?P<num2>\d+(?:\.\d+)?)$")
+MONEY_RE = re.compile(r"^(?:(?P<sym>US\$|AU\$|A\$|\$)\s*)?(?P<num>\d+(?:\.\d+)?|\.\d+)\s*(?P<cur>[A-Za-z]{3}|美元|美金|澳元|澳币)?$|^(?P<cur2>[A-Za-z]{3})\s*(?P<num2>\d+(?:\.\d+)?)$", re.IGNORECASE)
 MAX_CASH = MAX_DECIMAL_VALUE
 
 
@@ -60,8 +60,11 @@ def parse_money_text(text: str) -> tuple[Decimal, str]:
     if not match:
         raise ValueError("cannot read the amount")
     amount = Decimal(match.group("num") or match.group("num2"))
-    currency = match.group("cur") or match.group("cur2") or "USD"
-    currency = "USD" if currency in {"美元", "美金"} else currency.upper()
+    symbol_currency = 'AUD' if (match.group('sym') or '').upper() in {'A$', 'AU$'} else 'USD'
+    currency = match.group("cur") or match.group("cur2") or symbol_currency
+    currency = {'美元': 'USD', '美金': 'USD', '澳元': 'AUD', '澳币': 'AUD'}.get(currency, currency.upper())
+    if match.group('sym') and (match.group('cur') or match.group('cur2')) and currency != symbol_currency:
+        raise ValueError('币种符号与币种代码不一致，请明确填写200 AUD或200 USD。')
     if amount > MAX_CASH:
         raise ValueError("amount is too large")
     return amount, currency

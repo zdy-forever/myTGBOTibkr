@@ -94,6 +94,16 @@ class StrategyCash(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     strategy_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     balance: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), default="USD", server_default="USD", nullable=False)
+
+
+class FxQuote(Base):
+    __tablename__ = "fx_quotes"
+    pair: Mapped[str] = mapped_column(String(12), primary_key=True)
+    aud_usd: Mapped[Decimal] = mapped_column(Numeric(20, 10), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
 
 
 class StrategyPool(Base):
@@ -265,6 +275,7 @@ class UserSignal(Base):
     signal_id: Mapped[int] = mapped_column(ForeignKey("signals.id", ondelete="CASCADE"), index=True)
     action: Mapped[SignalAction] = mapped_column(Enum(SignalAction), nullable=False)
     recommendation: Mapped[str] = mapped_column(Text, nullable=False)
+    fx_note: Mapped[str | None] = mapped_column(Text)
     notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     notification_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_error: Mapped[str | None] = mapped_column(Text)

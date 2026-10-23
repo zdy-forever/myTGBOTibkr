@@ -39,6 +39,18 @@ def parse_cash(text):
 async def save_cash_text(update, context, text):
     from .bot import _require
     number, amount, currency = parse_cash(text)
+    factory = context.application.bot_data['session_factory']
+    with transaction(factory) as session:
+        _require(session, update, context, allow_unselected=True)
+    from .fx import prepare_user_fx, refresh_market_quote
+    try:
+        if currency == 'AUD' and amount:
+            await asyncio.to_thread(refresh_market_quote, factory)
+        else:
+            await prepare_user_fx(context, update.effective_user.id)
+    except ValueError:
+        # Public raw cash can still be recorded; strategy conversion fails closed.
+        pass
     with transaction(context.application.bot_data['session_factory']) as session:
         user = _require(session, update, context, allow_unselected=True)
         if number is None:
@@ -46,8 +58,17 @@ async def save_cash_text(update, context, text):
                 raise ValueError('当前为独立金额模式，请填写策略编号，例如 CASH 1 200USD；切换公共现金请用 CASH 0 金额USD。')
             number = 0
         set_strategy_cash(session, user, number, amount, currency, actor=update.effective_user.id)
+        from .fx import conversion_note
+        try:
+            note = conversion_note(session, user.id, amount, currency)
+        except ValueError as exc:
+            note = str(exc)
     label = f'策略 {number} 独立现金' if number else '公共现金（已清除独立策略现金）'
-    note = '' if currency == 'USD' else '\n策略只分析美元；其他币种现金不会用于建议。'
+    if currency not in {'USD', 'AUD'}:
+        note = '策略只分析USD及按参考汇率折算的AUD；此币种现金不会用于建议。'
+    note = '\n' + note if note else ''
+    if currency == 'AUD':
+        note = '\nAUD资金使用自动汇率估值，/fx查看或刷新。' + note
     await update.message.reply_text(f'{label}已替换为 {amount:,.2f} {currency}。\n' +
         ('比例模式可用，请用 /strategy_weights 核对比例。' if number == 0 else
          '独立金额模式已生效，比例设置暂停。其他策略的独立现金不变。') + note + '\n/strategy 查看下一步；/portfolio 核对账户。')
@@ -62,6 +83,29 @@ async def plain_cash(update, context):
     except ValueError as exc:
         await update.message.reply_text(str(exc) + '\n示例：CASH 1 200USD；CASH 0 1000USD。/cancel 取消。')
     raise ApplicationHandlerStop
+
+
+async def fx_command(update, context):
+    from .bot import _require
+    from .fx import market_closed, refresh_market_quote
+    try:
+        with transaction(context.application.bot_data['session_factory']) as session:
+            _require(session, update, context, allow_unselected=True)
+        if context.args and context.args not in (['refresh'], ['刷新']):
+            raise ValueError('汇率自动获取，无需手动填写。请直接发送 /fx 查看或刷新。')
+        row = await asyncio.to_thread(refresh_market_quote, context.application.bot_data['session_factory'], force=True)
+        source = {'truefx': 'TrueFX市场参考买价', 'yahoo_delayed': 'Yahoo延迟参考行情', 'twelvedata': 'Twelve Data实时参考行情'}[row.source]
+        state = '\n外汇周末休市，当前为最近有效报价。' if market_closed(datetime.now(UTC)) else ''
+        text = (f'自动汇率：1 AUD = {row.rate:g} USD\n来源：{source}\n'
+                f'报价时间：{row.observed_at:%Y-%m-%d %H:%M:%S} UTC{state}\n'
+                '录入AUD现金、查看建议时自动刷新，正常缓存30秒，无需手动填写。\n'
+                '只影响资金估值，不修改原币记录，不会实际换汇或下单。\n'
+                '可发 CASH 2 200AUD 或 CASH 0 1000AUD。')
+    except PermissionError:
+        text = '请先 /start 验证身份并确认Premium有效。'
+    except ValueError as exc:
+        text = str(exc)
+    await update.message.reply_text(text)
 
 
 def parse_pool_change(args):
@@ -179,9 +223,15 @@ async def check_two(update, context, *, show_progress=True):
     from .daily_service import eligible, s2_snapshot, s2_text
     app = context.application
     try:
+        from .fx import prepare_user_fx
+        await prepare_user_fx(context, update.effective_user.id)
         with transaction(app.bot_data['session_factory']) as session:
             user = _require(session, update, context, strategy_id='strategy2')
             allocation_fraction(session, user.id, 'strategy2')
+            from .allocations import allocated_cash
+            from .fx import to_usd
+            raw_cash, raw_currency = allocated_cash(session, user.id, 'strategy2')
+            to_usd(session, user.id, raw_cash, raw_currency)
             uid = user.id
         if show_progress:
             await update.message.reply_text('正在读取策略 2 的最近完整行情，首次预热可能需要几分钟。')

@@ -86,6 +86,10 @@ def eligible(session, app, user, strategy_id, *, notify=True):
         return False
     try:
         allocation_fraction(session, user.id, strategy_id)
+        from .fx import to_usd
+        amount, currency = allocated_cash(session, user.id, strategy_id)
+        if currency == 'AUD':
+            to_usd(session, user.id, amount, currency)
     except ValueError:
         return False
     return True
@@ -134,8 +138,9 @@ def s2_text(session, user_id, data, today):
     from sgs.live import MANAGED_TICKERS, PROFILE_LABEL, recommendations
     fraction = allocation_fraction(session, user_id, 'strategy2')
     cash, currency = allocated_cash(session, user_id, 'strategy2')
-    if currency != 'USD':
-        raise ValueError('策略 2 需要美元现金，请先更新 /cash。')
+    from .fx import conversion_note, to_usd
+    fx_note = conversion_note(session, user_id, cash, currency)
+    cash = to_usd(session, user_id, cash, currency)
     positions = list(session.scalars(select(Position).where(Position.user_id == user_id)))
     holdings = {}
     outside = []
@@ -150,6 +155,8 @@ def s2_text(session, user_id, data, today):
              f'当前趋势：<b>{escape(data["trend"])}</b>', f'可用现金：${cash:,.2f}',
              '目标配置：' + '、'.join(f'{escape(t)} {w:.1%}' for t, w in data['weights'].items() if w > 0), '',
              '<b>今日操作</b>']
+    if fx_note:
+        lines.insert(6, escape(fx_note))
     lines += [f'{"买入" if a["action"] == "BUY" else "卖出"} {a["symbol"]} '
               f'{a["shares"]:.6f}'.rstrip('0').rstrip('.') +
               f' 股（约 ${a["shares"] * a["reference_price"]:.2f}，参考价 ${a["reference_price"]:.2f}）'
@@ -174,6 +181,8 @@ def s1_text(session, user, run, settings, today, days, app):
     actions = [s for s in data['signals'] if due or s['kind'] != 'MONTHLY_BUY']
     lines = [f'📊 <b>策略 1 · 每日盘前报告 {today}</b>', f'行情截至：{escape(run.as_of_bar)}',
              '状态：已完成持仓与候选股票检查。', '<b>今日操作</b>']
+    if data.get('cash_conversion'):
+        lines.insert(3, escape(data['cash_conversion']))
     lines += [signal_html(s) for s in actions]
     if not actions:
         lines.append('今日无需操作。' if due else '今日不是你的月度买入提醒日；未发现需要调整的持仓。')
@@ -206,6 +215,16 @@ async def _daily_run(app, now):
         return
     today, previous, days, opening = window
     factory = app.bot_data['session_factory']
+    from .fx import refresh_market_quote
+    from .models import CashAccount, StrategyCash
+    with transaction(factory) as session:
+        needs_fx = session.scalar(select(CashAccount.user_id).where(CashAccount.currency == 'AUD', CashAccount.balance > 0).limit(1)) or session.scalar(
+            select(StrategyCash.user_id).where(StrategyCash.currency == 'AUD', StrategyCash.balance > 0).limit(1))
+    if needs_fx:
+        try:
+            await asyncio.to_thread(refresh_market_quote, factory)
+        except ValueError as exc:
+            log.warning('AUD reference quote unavailable: %s', exc)
     for strategy_id in ('strategy1', 'strategy2'):
         with transaction(factory) as session:
             users = list(session.scalars(select(User).join(UserStrategy).where(UserStrategy.strategy_id == strategy_id)))

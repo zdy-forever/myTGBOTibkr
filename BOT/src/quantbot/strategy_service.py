@@ -124,6 +124,9 @@ def portfolio_of(session: Session, user_id: str):
         holdings[key] = qs.Holding(symbol, float(shares * fraction), float(cost / shares) if shares else 0.0,
                                    currency, exchange)
     balance, currency = allocated_cash(session, user_id)
+    if currency == 'AUD':
+        from .fx import to_usd
+        balance, currency = to_usd(session, user_id, balance, currency), 'USD'
     return qs.Portfolio(holdings=holdings, cash=float(balance), currency=currency)
 
 
@@ -162,6 +165,9 @@ def signals_for(session: Session, user_id: str, run, settings, now: datetime | N
     deposit = portfolio.cash if portfolio.currency == "USD" else 0.0
     blocked, protected = cooldowns(session, user_id)
     data = qs.signals_for_user(run, portfolio, settings, deposit_usd=deposit, blocked=blocked, protected=protected, now=now).to_dict()
+    from .fx import conversion_note
+    amount, currency = allocated_cash(session, user_id)
+    data['cash_conversion'] = conversion_note(session, user_id, amount, currency)
     return data
 
 
@@ -228,7 +234,7 @@ def store_user_signals(session: Session, row: StrategyRun, run, user_id: str, da
         ref = _reference_signal(session, row, run, s["symbol"])
         if session.scalar(select(UserSignal.id).where(UserSignal.user_id == user_id, UserSignal.signal_id == ref.id)):
             continue
-        session.add(UserSignal(user_id=user_id, signal_id=ref.id, action=SignalAction(s["action"]), recommendation=signal_line(s, split=len(buys) == 2)))
+        session.add(UserSignal(user_id=user_id, signal_id=ref.id, action=SignalAction(s["action"]), recommendation=signal_line(s, split=len(buys) == 2), fx_note=data.get('cash_conversion') or None))
         created += 1
     return created
 
@@ -322,7 +328,8 @@ async def _deliver_pending(application) -> tuple[int, int]:
         for us, telegram_id in rows:
             if application.bot_data.get("enforce_premium") and not application.bot_data["accounts"].has_premium_access(session, telegram_id):
                 continue
-            batches.setdefault(us.user_id, (telegram_id, []))[1].append((us.id, public_recommendation(us.recommendation)))
+            body = public_recommendation(us.recommendation) + ('\n' + us.fx_note if us.fx_note else '')
+            batches.setdefault(us.user_id, (telegram_id, []))[1].append((us.id, body))
     sent = failed = 0
     for user_id, (telegram_id, items) in batches.items():
         error = None
@@ -342,6 +349,10 @@ async def _deliver_pending(application) -> tuple[int, int]:
                         break
                     try:
                         fraction = allocation_fraction(session, user_id)
+                        from .fx import to_usd
+                        raw_cash, raw_currency = allocated_cash(session, user_id)
+                        if raw_currency == 'AUD':
+                            to_usd(session, user_id, raw_cash, raw_currency)
                     except ValueError:
                         break
                     eligible = set(session.scalars(select(UserSignal.id).where(

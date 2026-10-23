@@ -61,8 +61,8 @@ def import_portfolio_csv(session: Session, user: User, content: str, *, actor: i
             if number in cash_rows:
                 raise ValueError("CSV contains multiple cash rows for the same strategy")
             amount, currency = _money(row["Average Price"])
-            if number and currency != "USD":
-                raise ValueError("独立策略现金只接受 USD")
+            if number and currency not in {"USD", "AUD"}:
+                raise ValueError("独立策略现金只接受 USD 或 AUD")
             cash_rows[number] = (amount, currency)
             continue
         symbol = normalize_symbol(company)
@@ -98,7 +98,7 @@ def export_portfolio_csv(session: Session, user: User) -> str:
     if budgets:
         for row in budgets:
             writer.writerow(["CASH", row.strategy_id.removeprefix("strategy"),
-                             f"{plain(row.balance, 2, 8)} USD"])
+                             f"{plain(row.balance, 2, 8)} {row.currency}"])
     else:
         writer.writerow(["CASH", 0, f"{plain(cash.balance, 2, 8)} {cash.currency}"])
     for position in service.list_positions(session, user.id):

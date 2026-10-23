@@ -73,6 +73,7 @@ COMMON_HELP = """📘 <b>通用使用说明</b>
 /strategy1　启用策略 1：月度定投个股(加强型 QQQ)
 /strategy2　启用策略 2：G2 趋势 ETF 轮动
 /cash　按提示设置独立策略现金，或公共现金（CASH 0）
+/fx　查看或刷新自动AUD/USD汇率，无需手动填写
 /strategy_weights　仅公共现金模式可用，单策略默认 100%；多策略比例总和须为 100%，最多两位小数
 /subscribe　查看订阅状态或开通 Premium
 /chat　给管理员留言，留言及回复保存 14 天后自动删除
@@ -83,6 +84,16 @@ COMMON_HELP = """📘 <b>通用使用说明</b>
 /cancel　在输入过程中随时取消
 
 以下按已启用策略分别说明。未启用的策略不显示操作说明；停用后对应说明也会移除。"""
+
+AUD_HELP = ('AUD资金：直接填写CASH 1 200AUD、CASH 2 300AUD或CASH 0 1000AUD。'
+            '系统自动获取AUD/USD汇率并在建议中显示来源和报价时间，正常缓存30秒；/fx可主动刷新，无需手动填汇率。'
+            '外汇周末休市时标明最近报价；未配置行情源、请求失败或行情过期时暂停AUD资金建议。'
+            '支持USD与AUD独立预算并存，按USD估值占比分配持仓计算份额。原币记录保留，建议仍以USD计价；'
+            '这里只估算，不会自动换汇；未增加澳股选股功能。')
+
+STRATEGY_PICK += '\n\n' + AUD_HELP
+STRATEGY1_WELCOME += '\n\n' + AUD_HELP
+STRATEGY2_WELCOME += '\n\n' + AUD_HELP
 
 STRATEGY1_HELP = f"""📈 <b>策略 1：月度定投个股(加强型 QQQ) · 使用说明</b>
 
@@ -134,6 +145,8 @@ STRATEGY1_HELP = f"""📈 <b>策略 1：月度定投个股(加强型 QQQ) · 使
 /help_import　CSV 导入格式
 /help_faq　常见问题"""
 
+STRATEGY1_HELP += '\n\n' + AUD_HELP
+
 STRATEGY_HELP_BLOCKS = {
     "strategy1": STRATEGY1_HELP,
     "strategy2": STRATEGY2_WELCOME + "\n\n/portfolio 查看持仓和现金；/add 添加；/edit 修改；/remove 删除。\n/import 与 /export 导入导出 CSV，格式见 /help_import；/history 查看操作记录。\n独立现金模式：持仓按各策略现金占总现金的比例划分计算份额；未启用策略的预算保留，不会转给其他策略。\n公共现金模式：持仓和现金按设置的权重划分。其他证券不纳入 S2 的 ETF 调仓。\n/help 查看通用说明；/help_faq 查看账户常见问题。",
@@ -167,13 +180,16 @@ def strategy_management_text(weights: dict, allocation_valid: bool, budgets=None
     lines += ["", "第二步：选择一种资金方式"]
     if budgets:
         lines += ["当前：独立金额模式（比例设置暂停）"]
-        lines += [f"策略 {k.removeprefix('strategy')}：${v:,.2f}" for k, v in sorted(budgets.items())[:20]]
+        for key, value in sorted(budgets.items())[:20]:
+            amount, currency = value if isinstance(value, tuple) else (value, 'USD')
+            lines.append(f"策略 {key.removeprefix('strategy')}：{amount:,.2f} {currency}")
         if len(budgets) > 20:
             lines.append("更多独立现金请用 /portfolio 翻页查看。")
     else:
         lines += ["当前：公共现金 / 比例模式（CASH 0）"]
         lines += [f"策略 {k.removeprefix('strategy')}：{v:g}%" if v is not None else f"{strategy_name(k)}：待分配" for k, v in sorted(weights.items())]
     lines += ["CASH 1 200USD → 替换策略 1 的独立现金", "CASH 2 300USD → 替换策略 2 的独立现金",
+              "也支持CASH 2 300AUD，汇率自动获取；/fx查看或刷新，不会实际换汇。",
               "CASH 0 500USD → 清除全部独立现金，改用公共现金",
               "/strategy_weights → 仅公共现金模式可设置比例，例如 1=60 2=40；合计 100%",
               "独立金额模式的持仓按各策略现金占比划分计算份额；预算保留给对应编号，停用不会自动重分配。",
@@ -267,14 +283,14 @@ NVDA,3,120 USD</pre>
 • 每行一只股票：代码，股数，平均成本（带币种，如 374.21 USD）
 • 股票代码恰为 CASH 时写 <code>STOCK:CASH</code>，避免与现金行混淆
 • <code>CASH,0,1000USD</code> 为公共现金，必须是唯一现金行，才可按比例分配。
-• 独立金额可同时填写 <code>CASH,1,200USD</code> 与 <code>CASH,2,300USD</code>；第二列是策略编号，支持 1、2、3 等，设置预算不会启用策略。
+• 独立金额可同时填写 <code>CASH,1,200USD</code> 与 <code>CASH,2,300AUD</code>，AUD汇率自动获取。第二列是策略编号，支持 1、2、3 等，设置预算不会启用策略。
 • 独立现金与 CASH 0 不能混用。旧 current_cash 行兼容为 CASH 0。
 
 <b>要注意</b>
 • 文件包含已有同名股票时，整次导入会被拒绝；修改已有持仓请用 /edit
 • CASH N 替换该编号现金；CASH 0 清除独立现金并替换公共余额。不含现金行则保持原设置。
 • 有错误会指出行号，这时整份文件都不会导入
-• 只分析美元（USD），其他币种会被忽略
+• 美股持仓价格仍为USD；AUD现金自动按市场参考汇率折算USD，/fx可查看。CSV导出保留现金原币，不将换算金额写回原币记录。
 • /export 导出的文件格式相同；已有持仓不能重复导入，恢复前请核对账户记录
 
 不想用文件：/add，按提示输入「股票代码 股数 平均成本 币种」，例如 <code>ISRG 0.55 374.21 USD</code>"""
@@ -318,7 +334,7 @@ FAQ = """❓ <b>策略 1 · 常见问题及账户说明</b>
 发 /auto_notice_date 5，设为每月第 5 个美股交易日；或发 /auto_notice_date random，每月随机选一个真实美股交易日。固定日期只接受 1–23 的整数，周末和休市日不算。回复会说明本月、下个月是否生效；固定模式还会检查未来 12 个月中哪些月份交易日不足。交易日不足则当月跳过，不自动提前或顺延；当月日期已过不补发，当月已通知过不重复发送。随机模式当月仅从设置之后的交易日中选。设置只影响自己，不会自动开启已关闭的通知。
 
 <b>币种？</b>
-只分析美元金额，其他币种会被忽略并提示。"""
+美股持仓和建议使用USD。现金支持USD和AUD；AUD汇率自动获取，/fx查看或刷新，报告标明来源和报价时间。只作估值，不会实际换汇。行情无效时暂停AUD资金建议；其他币种持仓不纳入美股分析。"""
 
 TOPICS = {
     "导入": CSV, "csv": CSV, "import": CSV,

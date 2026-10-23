@@ -54,6 +54,8 @@ def render_user_signals(data: dict) -> str:
         return "行情数据已过期，暂时没有建议。"
     summary = data["summary"]
     lines = [f"💼 <b>你的组合</b>  约 ${summary['equity']:,.0f}（现金 ${summary['cash']:,.0f}）", ""]
+    if data.get('cash_conversion'):
+        lines += [esc(data['cash_conversion']), '']
     signals = data["signals"]
     if signals:
         lines.append("💡 <b>操作建议</b>")

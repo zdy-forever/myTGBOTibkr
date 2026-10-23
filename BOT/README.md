@@ -105,7 +105,7 @@ QUANT_STRATEGY_HOME=/opt/quantbot/app/data/strategy   # 部署时务必设在可
 - **资金模式**：独立现金用 `CASH 1 200USD` / `CASH 2 300USD`；已有持仓按独立金额占总现金的比例划分计算份额。只有公共现金 `CASH 0` 模式可设置 `/strategy_weights 1=60 2=40`，比例每项大于 0、最多两位小数且合计 100%。未启用策略的独立金额保留；预算编号不会启用策略。设置变化使旧的待发建议失效，不自动划转资金。
 - **数据库升级**：个人提醒日期、随机模式、白名单备注、多策略启用记录和资金权重由 Alembic 迁移持久保存。现有安装更新代码后，启动前需在 `BOT/` 目录执行 `.venv/bin/alembic upgrade head`（使用部署实际的虚拟环境路径；最新迁移为 `0016_daily_report_version`）。已有单策略用户迁移为 100%；已有多策略用户需要手动分配。新用户需主动启用策略。持仓、订阅状态和已完成月份保留。
 - **旧 S1 管理员手动推送流程**：一次共享运行（行情、SEC 财报，不含任何用户数据）→ 存入 `strategy_runs`（`metadata_json` 是整份结果）→ 逐个用户、各自单独事务、只读该用户自己的 `positions` 和 `cash_accounts` 打分 → 写入 `user_signals` → 每人一条 Telegram 消息推送（受 `/settings signals` 开关控制；失败记录在 `notification_attempts` / `last_error`，最多重试 5 次）。
-- **用户自己填持仓**：`/add`、`/import`、`/cash`。可投入金额就是该用户的现金余额，现金为 0 时不给买入金额，会提示先用 `/cash` 填写。只分析美元金额。
+- **用户自己填持仓**：`/add`、`/import`、`/cash`。可投入金额来自该用户所分配的现金，现金为0时不给买入金额。美股持仓以USD计价；AUD现金按自动获取的市场参考汇率折算USD，原币记录保留。详见下方“AUD资金与自动汇率”。
 - **`signals` 表**：每次运行里每只出现在建议中的股票一行共享参考行（价格、P/V/F 原始分，`action` 固定 `HOLD`，表示共享层没有动作；买价区间字段留空，策略没有这类规则）。真正的买入/卖出在 `user_signals.action` 和 `recommendation` 里，按用户各自计算。
 - **每日状态**：S2 共享状态存 `strategy_snapshots`；两策略每人每天的报告存 `daily_reports`，按用户、策略、交易日唯一。
 - **旧 S1 信号幂等**：`strategy_runs` 按（最后价格日, 策略版本）唯一，同一天已完成的运行不会重复；`user_signals` 按（用户, 股票）唯一。
@@ -170,3 +170,46 @@ sudo systemctl start quantbot
 - Phase 1：数据库、注册鉴权、用户隔离、持仓/现金 CRUD、CSV、定投与测试已完成。
 - Phase 2：策略适配、每月运行、逐用户信号与推送已完成（见「策略接入」）。
 - Phase 3：管理员公告、通知开关、结构化日志、systemd、备份恢复和部署文档已完成；`/runstrategy` 已可用。
+# AUD资金与自动汇率
+
+现有美股S1、S2支持USD和AUD现金。AUD只用于资金估值，不增加ASX选股，也不执行实际换汇或下单。
+
+直接发送：
+
+```text
+CASH 2 200AUD
+```
+
+或使用公共现金模式：
+
+```text
+CASH 0 1000AUD
+/strategy_weights 1=60 2=40
+```
+
+`CASH`金额仍是替换余额，不是充值。独立金额与比例模式仍互斥；只有`CASH 0`可设置比例。独立预算可同时使用USD和AUD，持仓计算份额按当前美元估值占比分配，原持仓和原币金额不被修改。
+
+`/fx`查看或刷新自动AUD/USD汇率，无需输入数字。默认从TrueFX获取带时间戳的AUD/USD买卖报价，采用AUD卖出、换入USD方向的参考买价，正常缓存30秒。策略报告显示来源和报价UTC时间；周末外汇休市时注明使用最近有效报价。此价格是市场参考价，不是IBKR保证成交价，实际换汇费和券商点差可能不同。
+
+汇率缺失、数值异常、时间超前或过期时，暂停相关AUD建议；不会以1:1换算或默认当USD。报价服务故障有短时退避，USD账户继续工作。正常交易时段实时源报价最长5分钟，周末允许最近72小时内有效报价；星期日纽约17:00开市后不再接受周五旧报价。每次计算使用同一汇率快照，S1待推送建议保存原始汇率说明。
+
+CSV示例：
+
+```csv
+Company,Shares Held,Average Price
+CASH,1,200USD
+CASH,2,300AUD
+SCHD,2,30 USD
+```
+
+导出保留`AUD`，不将美元估值写回澳元金额。现有美股持仓的平均成本和交易建议仍使用USD。
+
+默认无需新增API密钥：
+
+```dotenv
+FX_PROVIDER=truefx
+```
+
+可选替代实时源为`FX_PROVIDER=twelvedata`，并在服务器`.env`中设置`TWELVE_DATA_API_KEY`。若明确接受延迟参考行情，可设`FX_PROVIDER=yahoo`；报告会标明“延迟”，不会静默降级为此源。所有源都只是估值参考，不是实际券商换汇。
+
+升级需要在BOT目录执行原有的`python -m alembic upgrade head`，本次新增迁移`0017_aud_cash`：既有独立现金补`USD`默认值，新增汇率缓存和建议汇率说明。请沿用部署前备份流程；无需修改原有升级命令。降级前必须将独立预算改回USD，防止AUD余额被错误标成USD。

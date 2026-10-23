@@ -49,7 +49,7 @@ def test_cash_grammar(text,number,amount):
     assert parse_cash(text)==(number,Decimal(amount),'USD')
 
 
-@pytest.mark.parametrize('rows',['CASH,0,100USD\nCASH,1,20USD\n','CASH,1,100USD\nCASH,1,20USD\n','CASH,1,20AUD\n','CASH,-1,20USD\n'])
+@pytest.mark.parametrize('rows',['CASH,0,100USD\nCASH,1,20USD\n','CASH,1,100USD\nCASH,1,20USD\n','CASH,1,20EUR\n','CASH,-1,20USD\n'])
 def test_csv_invalid_cash_atomic(factory,rows):
     uid=add_user(factory,1,cash='50')
     with pytest.raises(ValueError),factory.begin() as session:

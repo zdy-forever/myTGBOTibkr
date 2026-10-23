@@ -582,9 +582,11 @@ def test_cash_input_is_parsed_forgivingly_and_normalised():
             parse_money_text(bad)
 
 
-async def test_cash_command_confirms_the_normalised_value_and_explains_bad_input(factory, accounts):
+async def test_cash_command_confirms_the_normalised_value_and_explains_bad_input(factory, accounts, monkeypatch):
     from quantbot import bot
     from quantbot.models import CashAccount
+    from quantbot import fx
+    monkeypatch.setattr(fx, 'fetch_quote', lambda now=None: fx.Quote(Decimal('.65'), now or datetime.now(UTC), now or datetime.now(UTC), 'truefx'))
 
     uid = add_user(factory, 1, cash="0")
     app = FakeApp(factory, accounts)
@@ -599,7 +601,7 @@ async def test_cash_command_confirms_the_normalised_value_and_explains_bad_input
     assert await bot.cash_data(update, context) == bot.CASH_DATA and "没看懂" in message.texts[-1]
     update.message.text = "150 aud"
     await bot.cash_data(update, context)
-    assert "150.00 AUD" in message.texts[-1] and "只分析美元" in message.texts[-1]
+    assert "150.00 AUD" in message.texts[-1] and "自动汇率" in message.texts[-1]
 
 
 def test_numbers_are_shown_the_way_people_write_them():

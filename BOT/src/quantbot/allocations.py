@@ -1,7 +1,7 @@
 """User-specific allocation validation shared by commands and background jobs."""
 import re
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 
 from sqlalchemy import select
 
@@ -24,8 +24,9 @@ def set_strategy_cash(session, user, number, amount, currency, *, actor):
     if not isinstance(number, int) or not 0 <= number <= 9999:
         raise ValueError("策略编号须为 0–9999；0 表示公共现金池。")
     amount = decimal_value(amount, max_places=8)
-    if number and currency != "USD":
-        raise ValueError("独立策略现金只接受 USD。")
+    from .fx import to_usd
+    if number and currency not in {"USD", "AUD"}:
+        raise ValueError("独立策略现金只接受 USD 或 AUD。")
     budgets = cash_budgets(session, user.id)
     if number == 0:
         for row in budgets:
@@ -35,12 +36,14 @@ def set_strategy_cash(session, user, number, amount, currency, *, actor):
         key = "strategy" + str(number)
         row = session.get(StrategyCash, (user.id, key))
         if row is None:
-            row = StrategyCash(user_id=user.id, strategy_id=key, balance=amount)
+            row = StrategyCash(user_id=user.id, strategy_id=key, balance=amount, currency=currency)
             session.add(row)
         else:
             row.balance = amount
+            row.currency = currency
         session.flush()
-        total = sum((r.balance for r in cash_budgets(session, user.id)), Decimal(0))
+        total = sum((to_usd(session, user.id, r.balance, r.currency) for r in cash_budgets(session, user.id)), Decimal(0))
+        total = total.quantize(Decimal('0.00000001'), rounding=ROUND_DOWN)
         PortfolioService().set_cash(session, user, total, "USD", actor=actor)
     invalidate_suggestions(session, user.id)
     session.flush()
@@ -50,7 +53,7 @@ def allocated_cash(session, user_id, strategy_id="strategy1"):
     fraction = allocation_fraction(session, user_id, strategy_id)
     budget = session.get(StrategyCash, (user_id, strategy_id))
     if budget is not None:
-        return budget.balance, "USD"
+        return budget.balance, budget.currency
     row = session.get(CashAccount, user_id)
     return (row.balance * fraction, row.currency) if row else (Decimal(0), "USD")
 
@@ -67,11 +70,12 @@ def allocation_fraction(session, user_id, strategy_id="strategy1") -> Decimal:
     budgets = cash_budgets(session, user_id)
     if budgets:
         chosen = next((row for row in budgets if row.strategy_id == strategy_id), None)
-        total = sum((row.balance for row in budgets), Decimal(0))
+        from .fx import to_usd
+        total = sum((to_usd(session, user_id, row.balance, row.currency) for row in budgets), Decimal(0))
         if chosen is None or total <= 0:
             raise ValueError("当前为独立金额模式，请用 CASH 策略编号 金额USD 设置该策略现金。")
         # The same fraction partitions existing holdings, so no asset is counted twice.
-        return chosen.balance / total
+        return to_usd(session, user_id, chosen.balance, chosen.currency) / total
     if (not rows or any(row.weight_percent is None or not 0 < row.weight_percent <= 100 for row in rows)
             or sum(row.weight_percent for row in rows) != 100):
         raise ValueError("请先用 /strategy_weights 为所有已启用策略分配权重，总和必须为 100%。分配完成前暂停策略建议和推送。")

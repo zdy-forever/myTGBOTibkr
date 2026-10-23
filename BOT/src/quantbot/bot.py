@@ -39,7 +39,7 @@ from telegram.ext import (
 )
 
 from .allocations import allocation_fraction, cash_budgets, parse_weights, save_weights, selections
-from .strategy_commands import (check_two, parse_pool_change, plain_cash, pool_command, save_cash_text,
+from .strategy_commands import (check_two, fx_command, parse_pool_change, plain_cash, pool_command, save_cash_text,
                                 strategy_callback, strategy_keyboard, strategy_two_off)
 from .announcements import publish_announcement
 from .chat import (
@@ -111,10 +111,12 @@ _PUBLIC_MENU = [("start", "开始或查看当前权限"), ("help", "使用说明
 _REGISTERED_MENU = _PUBLIC_MENU + [("subscribe", "查看或开通订阅"),
                                    ("chat", "给管理员留言"), ("unbind", "解绑账户")]
 _STRATEGY_MENU = _REGISTERED_MENU + [
+    ("fx", "查看或刷新自动AUD/USD汇率"),
     ("strategy_weights", "查看或分配策略资金权重"),
     ("strategy", "策略管理：启停与资金权重"), ("strategy1", "选择策略 1：月度定投个股(加强型 QQQ)"),
     ("strategy2", "启用策略 2：G2 趋势 ETF 轮动")]
 _PREMIUM_MENU = _REGISTERED_MENU + [
+    ("fx", "查看或刷新自动AUD/USD汇率"),
     ("strategy_weights", "查看或分配策略资金权重"),
     ("strategy", "策略管理：启停与资金权重"), ("strategy1", "选择策略 1：月度定投个股(加强型 QQQ)"),
     ("strategy1_off", "停用策略 1"), ("strategy2", "启用策略 2：G2 趋势 ETF 轮动"),
@@ -277,7 +279,7 @@ async def authorization_gate(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if status != "unregistered":
         allowed.update({"/subscribe", "/unbind", "/chat"})
         if premium:
-            allowed.update({"/strategy", "/strategy1", "/strategy1_off", "/strategy2", "/strategy2_off", "/strategy_weights", "/cash"})
+            allowed.update({"/strategy", "/strategy1", "/strategy1_off", "/strategy2", "/strategy2_off", "/strategy_weights", "/cash", "/fx"})
         if message and getattr(message, "successful_payment", None):
             return
         if update.callback_query and (update.callback_query.data or "").startswith("unbind:"):
@@ -913,7 +915,7 @@ async def portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             user = _require(session, update, context)
             cash = portfolios.cash(session, user.id)
             positions = portfolios.list_positions(session, user.id)
-            pages = render_portfolio_pages(cash, positions) + _budget_pages(session, user.id)
+            pages = _portfolio_pages(session, user.id, cash, positions) + _budget_pages(session, user.id)
             account_id = user.id
     except PermissionError:
         await update.message.reply_text("请先使用 /start 注册。")
@@ -925,13 +927,34 @@ async def portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                                     reply_markup=_portfolio_navigation(account_id, page, len(pages)))
 
 
+def _portfolio_pages(session, user_id, cash, positions):
+    from .fx import conversion_note, to_usd
+    from decimal import Decimal
+    pages = render_portfolio_pages(cash, positions)
+    budgets = cash_budgets(session, user_id)
+    if budgets:
+        try:
+            total = sum((to_usd(session, user_id, r.balance, r.currency) for r in budgets), Decimal(0))
+            line = f'💵 独立现金合计（参考估值）　<b>{total:,.2f} USD</b>'
+        except ValueError as exc:
+            line = '💵 独立现金合计暂不可估值：' + html.escape(str(exc))
+        return ['\n'.join(line if p.startswith('💵 ') else p for p in page.splitlines()) for page in pages]
+    if cash.currency == 'AUD':
+        try:
+            note = conversion_note(session, user_id, cash.balance, cash.currency)
+        except ValueError as exc:
+            note = str(exc)
+        return [page + '\n\n' + html.escape(note) for page in pages]
+    return pages
+
+
 def _budget_pages(session, user_id):
     rows = cash_budgets(session, user_id)
     pages = []
     for start in range(0, len(rows), 30):
-        lines = ["💰 <b>独立策略现金</b>（原始现金合计见持仓页）"]
-        lines += [f"策略 {r.strategy_id.removeprefix('strategy')}：${r.balance:,.2f}" for r in rows[start:start + 30]]
-        lines += ["CASH 编号 金额USD 替换该项；CASH 0 总金额USD 切回公共现金。", "/strategy 查看分配状态。"]
+        lines = ["💰 <b>独立策略现金</b>（以下为原币记录，合计按USD估值）"]
+        lines += [f"策略 {r.strategy_id.removeprefix('strategy')}：{r.balance:,.2f} {html.escape(r.currency)}" for r in rows[start:start + 30]]
+        lines += ["CASH 编号 金额USD/AUD 替换该项；CASH 0 金额USD/AUD 切回公共现金。", "AUD汇率自动获取；/fx查看或刷新，/strategy查看分配状态。"]
         pages.append("\n".join(lines))
     return pages
 
@@ -963,8 +986,8 @@ async def portfolio_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.answer("这是旧账户的页面，请重新发送 /portfolio。", show_alert=True)
             return
         portfolios = PortfolioService()
-        pages = render_portfolio_pages(portfolios.cash(session, user.id),
-                                       portfolios.list_positions(session, user.id)) + _budget_pages(session, user.id)
+        pages = _portfolio_pages(session, user.id, portfolios.cash(session, user.id),
+                                 portfolios.list_positions(session, user.id)) + _budget_pages(session, user.id)
         account_id = user.id
     page = int(match.group(2))
     if page > len(pages):
@@ -1126,7 +1149,7 @@ async def cash_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             return ConversationHandler.END
         except ValueError as exc:
             await update.message.reply_text(str(exc))
-    await update.message.reply_text("请输入：1 200USD（策略 1）、2 300USD（策略 2），或 0 500USD（公共现金，清除独立金额后可按比例分配）。也可随时发送 CASH 1 200USD。金额会替换余额，不是充值。/cancel 取消。")
+    await update.message.reply_text("请输入：1 200USD（策略 1）、2 300AUD（策略 2），或 0 500AUD（公共现金，清除独立金额后可按比例分配）。AUD汇率自动获取，/fx查看或刷新。金额会替换余额，不是充值或实际换汇。/cancel 取消。")
     return CASH_DATA
 
 
@@ -1195,7 +1218,7 @@ async def strategy_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             valid = True
         except ValueError:
             valid = False
-        budgets = {r.strategy_id: r.balance for r in cash_budgets(session, user.id)}
+        budgets = {r.strategy_id: (r.balance, r.currency) for r in cash_budgets(session, user.id)}
     await update.message.reply_text(strategy_management_text(weights, valid, budgets),
                                     reply_markup=strategy_keyboard(set(weights)))
 
@@ -1308,6 +1331,8 @@ async def check_one(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     app = context.application
     try:
+        from .fx import prepare_user_fx
+        await prepare_user_fx(context, update.effective_user.id)
         with transaction(app.bot_data["session_factory"]) as session:
             user = _require(session, update, context, strategy_id="strategy1")
             allocation_fraction(session, user.id)
@@ -1951,7 +1976,7 @@ def configure_application(application: Application, accounts: AccountService, fa
     # or a lost conversation state. Once bound, contact() rejects stale prompts.
     application.add_handler(MessageHandler(filters.CONTACT, contact))
     application.add_handler(CommandHandler("cancel", cancel))
-    for command, handler in [("help", help_command), ("privacy", privacy), ("subscribe", subscribe),
+    for command, handler in [("help", help_command), ("fx", fx_command), ("privacy", privacy), ("subscribe", subscribe),
                              ("admin_help", admin_help), ("admin_list", admin_list), ("admin_show", admin_show),
                              ("admin_add", admin_add), ("admin_edit", admin_edit), ("admin_remove", admin_remove),
                              ("whitelist_add", whitelist_add), ("whitelist_list", whitelist_list),
