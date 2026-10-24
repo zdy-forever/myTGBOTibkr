@@ -514,26 +514,19 @@ async def test_default_pool_above_old_sixty_limit_can_be_edited(factory,accounts
         assert session.get(StrategyPool,uid).symbols==defaults+['AAPL']
 
 
-def test_s2_fractional_buy_with_less_than_one_share_cash():
+def test_s2_small_buy_waits_for_cost_efficient_whole_shares():
     data={'weights':{'SCHD':1},'prices':{t:100 for t in TICKERS}}
     orders=recommendations(data,{},50)
-    assert len(orders)==1
-    order=orders[0]
-    assert order['symbol']=='SCHD' and order['action']=='BUY'
-    assert 0<order['shares']<1
-    q=Decimal(str(order['shares']))
-    price=Decimal(100)*(1+Decimal(str(cfg()['SLIPPAGE_PER_SIDE'])))
-    fee=min(max(q*Decimal('.005'),Decimal(1)),q*price*Decimal('.01'))
-    assert Decimal(50)-q*price-fee>=Decimal(str(cfg()['V5_CASH_RESERVE_USD']))
+    assert orders==[]
 
 
 def test_s2_fractional_exit_preserves_sub_precision_dust_and_sells_first():
     data={'weights':{'SCHD':1},'prices':{t:100 for t in TICKERS}}
-    orders=recommendations(data,{'TQQQ':Decimal('.123456789')},100)
+    orders=recommendations(data,{'TQQQ':Decimal('.123456789')},200)
     assert orders[0]['symbol']=='TQQQ' and orders[0]['action']=='SELL'
     assert orders[0]['shares']==.123456
     assert Decimal(str(orders[0]['shares']))<=Decimal('.123456789')
-    assert any(o['action']=='BUY' and not o['shares'].is_integer() for o in orders)
+    assert any(o['action']=='BUY' and o['shares'].is_integer() for o in orders)
 
 
 def test_s2_fractional_cash_and_holdings_invariants():
@@ -554,7 +547,8 @@ def test_s2_fractional_cash_and_holdings_invariants():
                 assert not buy_seen
                 assert q<=held[order['symbol']]
             px=Decimal(str(prices[order['symbol']]))*(1+Decimal(str(cfg()['SLIPPAGE_PER_SIDE']))*(1 if buying else -1))
-            fee=min(max(q*Decimal('.005'),Decimal(1)),q*px*Decimal('.01'))
+            from sgs.live import _commission
+            fee=_commission(q,px)
             cash=cash-q*px-fee if buying else cash+q*px-fee
             assert cash>=0
             if buying: assert cash>=Decimal(str(cfg()['V5_CASH_RESERVE_USD']))
@@ -568,5 +562,6 @@ def test_s2_fractional_report_readable_and_no_whole_share_excuse(factory):
     with factory.begin() as session:
         text=daily.s2_text(session,uid,{'as_of':'2026-10-19','trend':'震荡',
             'weights':{'SCHD':1},'prices':{t:100 for t in TICKERS}},date(2026,10,20))
-        assert '买入 SCHD 0.' in text and '支持碎股' in text and '约 $' in text
-        assert '整股' not in text and 'e-' not in text
+        assert '买入 SCHD' not in text
+        assert '整股' in text and '至少80美元' in text and '0.5%' in text
+        assert '成本要求' in text and '订单预览' in text and 'e-' not in text

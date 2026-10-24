@@ -103,19 +103,18 @@ def test_users_small_weight_changes_do_not_trigger_rebalancing(nav):
     assert recommendations(data, held, 13) == []
 
 
-@pytest.mark.parametrize('deviation,should_trade', [(19.99, False), (20., True)])
+@pytest.mark.parametrize('deviation,should_trade', [(199.99, False), (200., True)])
 def test_band_compares_actual_holdings_to_target_at_five_percent_of_nav(deviation, should_trade):
     data = {'weights': {'SCHD': .5, 'TQQQ': .5}, 'prices': dict.fromkeys(TICKERS, 100)}
-    held = {'SCHD': (193.5 + deviation) / 100, 'TQQQ': (193.5 - deviation) / 100}
+    held = {'SCHD': (1993.5 + deviation) / 100, 'TQQQ': (1993.5 - deviation) / 100}
     assert bool(recommendations(data, held, 13)) == should_trade
 
 
-def test_upgrade_exits_small_intermediate_positions_and_redeploys_sale_proceeds():
+def test_upgrade_exits_small_intermediate_positions_without_tiny_redeployment():
     data = {'weights': {'SCHD': .2, 'TQQQ': .8}, 'prices': dict.fromkeys(TICKERS, 100)}
     actions = recommendations(data, {'SCHD': .774, 'TQQQ': 2.896, 'SPMO': .1, 'QQQM': .1}, 13)
     assert {a['symbol'] for a in actions if a['action'] == 'SELL'} == {'SPMO', 'QQQM'}
-    assert actions[-1]['symbol'] == 'TQQQ' and actions[-1]['action'] == 'BUY'
-    assert actions[-1]['shares'] * 100 < 20
+    assert not any(a['action'] == 'BUY' for a in actions)
 
 
 def test_legacy_gpiq_exit_funds_schd_and_never_buys_gpiq():
@@ -136,7 +135,7 @@ def test_legacy_gpiq_exit_funds_schd_and_never_buys_gpiq():
 
 def test_missing_legacy_quote_blocks_only_legacy_exposure():
     data = {'weights': {'SCHD': 1.}, 'prices': dict.fromkeys(TICKERS, 100)}
-    assert recommendations(data, {}, 100)
+    assert recommendations(data, {}, 200)
     with pytest.raises(ValueError, match='GPIQ'):
         recommendations(data, {'GPIQ': 1}, 100)
     with pytest.raises(ValueError, match='无效'):

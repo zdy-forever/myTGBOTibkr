@@ -1,5 +1,5 @@
 {
-  "version": "strategy2-G2-up15-side20-direct-vol20-20261022",
+  "version": "strategy2-G2-up15-side20-direct-vol20-tiered-20261024",
   "adopted_on": "2026-10-22",
   "user_selection": "Balanced: STRONG_UP SCHD floor15%; SIDEWAYS20%SCHD80%SGOV; DOWN/STRONG_DOWN20%SCHD80%SGOV. Attack vol20%, direct SCHD.",
   "income_ticker": "SCHD",
@@ -31,8 +31,8 @@
     "STRONG_DOWN": "20% SCHD + SGOV discretionary sleeve"
   },
   "research_candidates_enabled": [],
-  "execution_version": "fractional-v4-up15-side20-direct-vol20",
-  "execution": "Read-only premarket suggestions from previous complete close;6dp fractional shares,20bps per-side budget plus commission,5%band,13USD reserve. No automatic orders or assumed fills.",
+  "execution_version": "tiered-v5-min80-fee005-whole",
+  "execution": "Read-only suggestions; ordinary adjustments: whole shares rounded down, min80USD and estimated one-way fee <=0.5%; Tiered 0.0035/share, min0.35 capped1%, fractional portion max(1%,0.01), external fee buffer0.05/order. Full exits and TQQQ reductions or equity sales in defensive regimes exempt cost filter and permit6dp. Existing5%band,13USD reserve,20bps slip retained. No automatic orders or assumed fills. FX costs excluded.",
   "base_core_archive": "FROZEN_RULES.json",
   "income_role_mapping": {
     "GPIQ": "SCHD"
@@ -150,7 +150,7 @@
     "LIVE_SIDEWAYS_SCHD_WEIGHT": 0.2
   },
   "source_sha256": {
-    "sgs/live.py": "61fc697399115d9a9d84a3ba03598e7a4b2d03af35711bb251b33638a5c0a414",
+    "sgs/live.py": "2b656643fcdec462e08f08cee935f5849e62000a757065fd6e9660b0229a489c",
     "sgs/config.py": "03cf745c39cf1977813da1cea4a037651aaab00cbfe868267bbe4a5055266b14",
     "sgs/config_v5.py": "7fcb6edbe746feaeb3925ebbde8b536b82bccc245c3ee39b0f6d2ea2c6a1d89d",
     "sgs/regime_v5.py": "401e024943ad54f288fbae8f032a45ba63568f5f02f67727cca01a47548767a8",
@@ -164,5 +164,17 @@
     "SIDEWAYS": 0.2,
     "DOWN": 0.2,
     "STRONG_DOWN": 0.2
+  },
+  "execution_cost_policy": {
+    "min_trade_usd": 80,
+    "max_fee_ratio": 0.005,
+    "external_fee_buffer_usd": 0.05,
+    "ordinary_quantity": "whole shares rounded down",
+    "risk_reduction": "TQQQ partial sales; non-SGOV sales in SIDEWAYS/DOWN/STRONG_DOWN; existing relative band retained",
+    "full_exit": "no relative band or cost gate; six-decimal precision",
+    "fee_source": "https://www.interactivebrokers.com/en/pricing/commissions-stocks.php",
+    "mixed_exit_fee": "conservative sum of whole and fractional portions; broker preview governs",
+    "fx_costs_included": false,
+    "research_status": "execution cost policy only; archived return backtests unchanged"
   }
 }

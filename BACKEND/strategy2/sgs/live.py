@@ -15,10 +15,13 @@ LEGACY_TICKERS = ('GPIQ',)
 MANAGED_TICKERS = TICKERS + LEGACY_TICKERS
 LABELS = {'STRONG_UP': '强上涨', 'UP': '上涨', 'SIDEWAYS': '震荡',
           'DOWN': '下跌', 'STRONG_DOWN': '强下跌'}
-VERSION = 'strategy2-G2-up15-side20-direct-vol20-20261022'
+VERSION = 'strategy2-G2-up15-side20-direct-vol20-tiered-20261024'
 PROFILE_LABEL = '上涨SCHD下限15% · 震荡SCHD20% · 平衡版'
-EXECUTION_VERSION = 'fractional-v4-up15-side20-direct-vol20'
+EXECUTION_VERSION = 'tiered-v5-min80-fee005-whole'
 SHARE_STEP = Decimal('0.000001')
+MIN_TRADE_USD = Decimal('80')
+MAX_FEE_RATIO = Decimal('0.005')
+EXTERNAL_FEE_BUFFER = Decimal('0.05')
 
 
 def cfg():
@@ -151,8 +154,25 @@ def _decimal(value):
 
 
 def _commission(quantity, price):
-    return min(max(abs(quantity) * Decimal('0.005'), Decimal(1)),
-               abs(quantity) * price * Decimal('0.01'))
+    """Tiered planning budget, including a $0.05 external-fee allowance.
+
+    Whole shares: first volume tier, $0.35 minimum, 1% notional cap.
+    Fractional shares: greater of 1% notional or $0.01. For mixed exits,
+    conservatively budget the two parts separately; broker preview governs.
+    https://www.interactivebrokers.com/en/pricing/commissions-stocks.php
+    """
+    quantity = abs(quantity)
+    if not quantity:
+        return Decimal(0)
+    whole = quantity.to_integral_value(rounding=ROUND_DOWN)
+    fraction = quantity - whole
+    fee = Decimal(0)
+    if whole:
+        fee += min(max(whole * Decimal('0.0035'), Decimal('0.35')),
+                   whole * price * Decimal('0.01'))
+    if fraction:
+        fee += max(fraction * price * Decimal('0.01'), Decimal('0.01'))
+    return fee + EXTERNAL_FEE_BUFFER
 
 
 def commission(quantity, price):
@@ -165,21 +185,21 @@ def _shares(value):
 
 
 def _affordable_quantity(wanted, budget, fill_price):
-    """Largest microshare quantity affordable including the piecewise fee model."""
+    """Largest whole-share purchase affordable including the fee allowance."""
     low = 0
-    high = int(min(wanted, max(budget, Decimal(0)) / fill_price) / SHARE_STEP)
+    high = int(min(wanted, max(budget, Decimal(0)) / fill_price))
     while low < high:
         middle = (low + high + 1) // 2
-        quantity = middle * SHARE_STEP
+        quantity = Decimal(middle)
         if quantity * fill_price + _commission(quantity, fill_price) <= budget:
             low = middle
         else:
             high = middle - 1
-    return low * SHARE_STEP
+    return Decimal(low)
 
 
 def recommendations(data, holdings, cash, previous=None):
-    """Fractional-share, sell-before-buy suggestions bounded by reported cash.
+    """Cost-filtered, sell-before-buy suggestions bounded by reported cash.
 
     Only the strategy's ETF slice is managed. Other securities are left unchanged.
     A changed cash/holdings input also permits recomputation after a user records fills.
@@ -219,6 +239,13 @@ def recommendations(data, holdings, cash, previous=None):
         if not quantity:
             continue
         closing = target[t] == 0 and held[t] > 0
+        # Attack reductions (including volatility scaling) and defensive regime
+        # equity sales retain fractional precision. The existing band still
+        # applies to partial sales; full exits always bypass it.
+        risk_reduction = quantity < 0 and (
+            t == 'TQQQ' or (t != 'SGOV' and data.get('bucket') in
+                            {'SIDEWAYS', 'DOWN', 'STRONG_DOWN'}))
+        cost_exempt = closing or risk_reduction
         small = abs(quantity) * price < _decimal(config['V5_REBALANCE_BAND']) * nav
         if small and not closing:
             if quantity < 0 or not config['V5_REDEPLOY_FREED_CASH'] or freed <= 0:
@@ -226,10 +253,18 @@ def recommendations(data, holdings, cash, previous=None):
             quantity = _affordable_quantity(quantity, freed, price * (1 + slip))
         if quantity > 0:
             quantity = _affordable_quantity(quantity, available - reserve, price * (1 + slip))
+        elif not cost_exempt:
+            quantity = -abs(quantity).to_integral_value(rounding=ROUND_DOWN)
         if not quantity:
             continue
         fill = price * (1 + slip if quantity > 0 else 1 - slip)
+        notional = abs(quantity) * price
+        if not cost_exempt and (notional < MIN_TRADE_USD or
+                               _commission(quantity, fill) / notional > MAX_FEE_RATIO):
+            continue
         cost = quantity * fill + _commission(quantity, fill)
+        if cost > available:
+            continue  # Even an exempt dust exit must be affordable after fees.
         available -= cost
         freed = freed - cost if quantity < 0 else max(0, freed - cost)
         out.append(dict(symbol=t, action='BUY' if quantity > 0 else 'SELL',
