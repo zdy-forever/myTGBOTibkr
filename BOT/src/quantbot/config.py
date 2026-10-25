@@ -35,6 +35,7 @@ class Settings:
     strategy_autorun: bool = False
     strategy_push_timezone: str = "Asia/Shanghai"
     strategy_push_hour: int = 10
+    paper_trading: bool = False
 
     @classmethod
     def from_env(cls, *, require_token: bool = True) -> Settings:
@@ -58,4 +59,5 @@ class Settings:
             strategy_autorun=os.getenv("STRATEGY_AUTORUN", "0").strip().lower() in {"1", "true", "yes"},
             strategy_push_timezone=os.getenv("STRATEGY_PUSH_TIMEZONE", "Asia/Shanghai"),
             strategy_push_hour=int(os.getenv("STRATEGY_PUSH_HOUR", "10")),
+            paper_trading=os.getenv("PAPER_TRADING", "0").strip().lower() in {"1", "true", "yes"},
         )

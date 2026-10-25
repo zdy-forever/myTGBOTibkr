@@ -49,3 +49,17 @@ CSV 的 CASH 0 必须是唯一现金行；重复编号、混用模式或无效�
 向进程注入环境，启动后立即删除临时文件，环境仅保留在监督进程与 Bot 进程中。
 监督进程会在 Bot 异常退出后重启；主机重启或监督进程退出后需重新注入凭据。
 进程号在 `data/supervisor.pid`，运行日志在 `data/runtime.log`。两者均不提交。
+
+## S2 模拟盘（仅 Bot Owner，可选）
+
+迁移 `0018_paper_trading` 新增 `paper_accounts`、`paper_events` 两表，不改动用户数据。环境变量 `PAPER_TRADING=1` 开启，默认关闭。
+默认沿用 `ALPACA_API_KEY/SECRET`（须为模拟盘密钥），也可另设 `ALPACA_PAPER_KEY/SECRET`。交易地址固定为 paper-api，
+每次下单前核对账户号以 PA 开头；卖出不超过 Alpaca 模拟持仓，从不做空，也不连接 IBKR。
+
+Bot 内账本按 Owner 的真实规模记账（Alpaca 模拟账户自有十万美元余额，且不发股息）：每个交易日与每日报告同一时间，
+先记上一交易日收盘估值，再入金（AUD 按自动汇率换汇、每次扣 2 美元）、补记股息（扣 15% 预扣税）与拆股，
+随后把 S2 建议作为开盘市价单提交到 Alpaca 模拟账户，以模拟成交价记账，手续费按 IBKR Tiered 估算。
+对照组 QQQM 同时同额入金，于同一交易日开盘整股买入。未确认的订单按客户订单号查询，不重复提交；
+价格异常疑似未登记拆股时暂停下单，待 Alpaca 登记后自动恢复，或由 Owner 发送 /paper_resume 确认。
+
+命令：/paper、/paper_start 900AUD 400AUD、/paper_deposit 300AUD、/paper_monthly 400AUD、/paper_resume、/paper_stop。

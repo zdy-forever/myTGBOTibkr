@@ -41,6 +41,7 @@ from telegram.ext import (
 from .allocations import allocation_fraction, cash_budgets, parse_weights, save_weights, selections
 from .strategy_commands import (check_two, fx_command, parse_pool_change, plain_cash, pool_command, save_cash_text,
                                 strategy_callback, strategy_keyboard, strategy_two_off)
+from . import paper
 from .announcements import publish_announcement
 from .chat import (
     create_message,
@@ -104,7 +105,7 @@ SUBSCRIPTION_OFFER = ("需要开通订阅：400 Telegram Stars / 30 天（约 US
                       "发送 /subscribe 开通。联系管理员可以有优惠：" + ADMIN_CONTACT_URL)
 ADMIN_COMMANDS = {"/admin_help", "/admin_list", "/admin_show", "/admin_add", "/admin_edit", "/admin_remove",
                   "/whitelist_add", "/whitelist_list", "/whitelist_show", "/whitelist_edit", "/whitelist_remove",
-                  "/announce", "/important_announce", "/users", "/stats", "/health", "/runstrategy"}
+                  "/announce", "/important_announce", "/users", "/stats", "/health", "/runstrategy"} | paper.COMMANDS
 
 _PUBLIC_MENU = [("start", "开始或查看当前权限"), ("help", "使用说明"),
                 ("privacy", "隐私说明"), ("help_faq", "常见问题")]
@@ -180,8 +181,11 @@ async def _refresh_user_menu(application, telegram_id: int) -> None:
         status = _ui_status(session, application.bot_data["accounts"], telegram_id)
         user = application.bot_data["accounts"].by_telegram(session, telegram_id)
         enabled = _enabled_strategies(session, user.id) if user else set()
+    commands = _menu_for(status, enabled)
+    if status in {"admin", "admin_strategy_required"} and application.bot_data["accounts"].is_owner(telegram_id):
+        commands += [BotCommand(command, description) for command, description in paper.OWNER_MENU]
     try:
-        await setter(_menu_for(status, enabled), scope=BotCommandScopeChat(telegram_id))
+        await setter(commands, scope=BotCommandScopeChat(telegram_id))
     except TelegramError:
         log.warning("could not refresh command menu for user %s", telegram_id, exc_info=True)
 
@@ -1985,6 +1989,7 @@ def configure_application(application: Application, accounts: AccountService, fa
                              ("strategy", strategy_command), ("strategy1", strategy_one),
                              ("strategy1_off", strategy_one_off), ("strategy2", strategy_two),
                              ("strategy2_off", strategy_two_off), ("check1", check_one), ("check2", check_two),
+                             *paper.HANDLERS.items(),
                              ("portfolio", portfolio), ("import", import_start), ("export", export_command), ("history", history), ("check", check), ("signals", signals), ("cooldown", cooldown), ("unbind", unbind_start), ("help_import", help_import), ("help_faq", help_faq), ("settings", settings), ("users", users_command), ("stats", stats_command), ("health", health), ("runstrategy", run_strategy)]:
         if command not in _STAGED_HANDLERS:
             command_handlers[command] = handler
@@ -2003,6 +2008,7 @@ def configure_application(application: Application, accounts: AccountService, fa
         from .daily_service import daily_tick
 
         application.job_queue.run_repeating(daily_tick, interval=300, first=120, name="daily-strategies")
+        application.job_queue.run_repeating(paper.paper_tick, interval=300, first=150, name="paper-trading")
         application.job_queue.run_repeating(retry_pending_notifications, interval=3600, first=60,
                                             name="strategy-notification-retry")
         application.job_queue.run_repeating(maintain_chat_messages, interval=3600, first=90,

@@ -112,6 +112,46 @@ class StrategyPool(Base):
     symbols: Mapped[list] = mapped_column(JSON, nullable=False)
 
 
+class PaperAccount(Base):
+    """Owner-only S2 paper ledger at the user's real scale. Alpaca paper supplies fills only."""
+    __tablename__ = "paper_accounts"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    started_on: Mapped[date] = mapped_column(Date, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    cash_usd: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    monthly_aud: Mapped[Decimal] = mapped_column(Numeric(20, 8), default=Decimal(0), nullable=False)
+    holdings: Mapped[dict] = mapped_column(JSON, nullable=False)
+    benchmark_cash_usd: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    benchmark_shares: Mapped[Decimal] = mapped_column(Numeric(24, 10), default=Decimal(0), nullable=False)
+    units: Mapped[Decimal] = mapped_column(Numeric(24, 10), nullable=False)
+    benchmark_units: Mapped[Decimal] = mapped_column(Numeric(24, 10), nullable=False)
+    deposits_aud: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    deposits_usd: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    fees_usd: Mapped[Decimal] = mapped_column(Numeric(20, 8), default=Decimal(0), nullable=False)
+    dividends_usd: Mapped[Decimal] = mapped_column(Numeric(20, 8), default=Decimal(0), nullable=False)
+    peak_nav_per_unit: Mapped[Decimal] = mapped_column(Numeric(24, 10), nullable=False)
+    max_drawdown: Mapped[Decimal] = mapped_column(Numeric(12, 8), default=Decimal(0), nullable=False)
+    benchmark_peak: Mapped[Decimal] = mapped_column(Numeric(24, 10), nullable=False)
+    benchmark_max_drawdown: Mapped[Decimal] = mapped_column(Numeric(12, 8), default=Decimal(0), nullable=False)
+    last_session: Mapped[date | None] = mapped_column(Date)
+    last_valued_on: Mapped[date | None] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class PaperEvent(Base):
+    """Append-only paper ledger: orders, fills, deposits, dividends, splits and daily marks."""
+    __tablename__ = "paper_events"
+    __table_args__ = (UniqueConstraint("account_id", "key", name="uq_paper_event_key"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[str] = mapped_column(ForeignKey("paper_accounts.id", ondelete="CASCADE"), index=True)
+    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    session_date: Mapped[date] = mapped_column(Date, nullable=False)
+    data: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class DailyReport(Base):
     __tablename__ = "daily_reports"
     __table_args__ = (UniqueConstraint("user_id", "strategy_id", "session_date", name="uq_daily_report"),)

@@ -52,6 +52,7 @@ def build_application(settings: Settings) -> Application:
     configure_application(application, accounts, factory)
     application.bot_data["strategy_autorun"] = settings.strategy_autorun
     application.bot_data["strategy_push"] = (settings.strategy_push_timezone, settings.strategy_push_hour)
+    application.bot_data["paper_trading"] = settings.paper_trading
     if application.job_queue:
         from .daily_service import daily_tick
         application.job_queue.run_daily(

@@ -487,7 +487,7 @@ async def test_run_and_notify_reuses_a_fresh_run_pushes_to_users_and_marks_the_m
 def test_help_topics_exist_fit_telegram_and_cover_every_registered_command():
     from telegram.ext import Application, CommandHandler
 
-    from quantbot import bot, help_text
+    from quantbot import bot, help_text, paper
 
     for topic in ("导入", "问题", "csv"):
         assert help_text.help_for(topic) != help_text.QUICK
@@ -498,7 +498,7 @@ def test_help_topics_exist_fit_telegram_and_cover_every_registered_command():
     commands = {c for handler in app.handlers[0] for c in getattr(handler, "commands", ())}
     admin = {"users", "stats", "health", "runstrategy", "announce", "important_announce", "whitelist_add", "whitelist_list", "whitelist_show", "whitelist_edit", "whitelist_remove",
              "admin_help", "admin_list", "admin_show", "admin_add", "admin_edit", "admin_remove",
-             "start", "cancel", "help", "signals"}
+             "start", "cancel", "help", "signals"} | {c.removeprefix("/") for c in paper.COMMANDS}
     assert {"check", "check1", "check2", "cooldown"} <= commands
     handlers = {command: handler.callback for handler in app.handlers[0]
                 if isinstance(handler, CommandHandler) for command in handler.commands}

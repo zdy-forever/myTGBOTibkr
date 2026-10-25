@@ -265,6 +265,15 @@ ADMIN_HELP = """🛡️ <b>管理员说明书</b>
 /health　检查 Bot 与数据库状态
 /runstrategy　立即运行策略 1，向已启用策略 1、权重有效、已开启策略通知且有 Premium 权限的用户推送建议
 
+<b>S2 模拟盘（仅 Bot Owner，服务器需 PAPER_TRADING=1）</b>
+/paper　查看模拟盘净值、回撤、持仓与 QQQM 定投对照
+/paper_start 900AUD 400AUD　开始：初始资金 + 每月首个交易日入金（第二项可省略）
+/paper_deposit 300AUD　额外入金，下一个交易日盘前入账
+/paper_monthly 400AUD　修改每月入金；0AUD 停止
+/paper_resume　确认价格异常为真实涨跌后恢复下单
+/paper_stop　停止模拟盘，保留记录
+只向 Alpaca 模拟账户下单，从不连接 IBKR；Bot 用户的建议与报告不受影响。
+
 <b>其他</b>
 管理员管理功能不要求启用投资策略；查看自己的投资建议仍须先启用策略。
 /help　普通用户命令
