@@ -1,32 +1,33 @@
-"""The adopted deployment profile, independent of archived GPIQ core tests."""
+"""TQQQ100 + cash deployment profile, independent of archived GPIQ core tests."""
 from datetime import date
 
 import numpy as np
 import pandas as pd
 import pytest
+from decimal import Decimal as D
 
 from sgs.live import (
     MANAGED_TICKERS, TICKERS, VERSION, cfg, income_sleeve, recommendations,
-    snapshot, target_weights, risk_scale,
+    snapshot, target_weights, risk_scale, weights_text,
 )
 
 
 @pytest.mark.parametrize('bucket,expected', [
-    ('SIDEWAYS', {'SCHD': .2, 'SGOV': .8}),
-    ('DOWN', {'SCHD': .2, 'SGOV': .8}),
-    ('STRONG_DOWN', {'SCHD': .2, 'SGOV': .8}),
-    ('STRONG_UP', {'SCHD': .15, 'TQQQ': .85}),
+    ('SIDEWAYS', {}),
+    ('DOWN', {}),
+    ('STRONG_DOWN', {}),
+    ('STRONG_UP', {'TQQQ': 1.}),
 ])
 def test_adopted_targets_for_each_active_regime(bucket, expected):
     actual = target_weights(cfg(), bucket, {'ratio': 1.06}, 'SPMO', 1.)
     assert actual == pytest.approx(expected)
 
 
-def test_strong_up_rejected_attack_goes_directly_to_schd():
+def test_strong_up_rejected_attack_stays_in_cash():
     actual = target_weights(cfg(), 'STRONG_UP', {'ratio': 1.06}, 'SPMO', .5,
                             level_scales=[.5, .5])
-    assert actual == pytest.approx({'SCHD': .575, 'TQQQ': .425})
-    assert not {'GPIQ', 'MQQQ', 'QQQP'} & actual.keys()
+    assert actual == pytest.approx({'TQQQ': .5})
+    assert not {'GPIQ', 'SCHD', 'SGOV', 'MQQQ', 'QQQP'} & actual.keys()
     assert income_sleeve({'GPIQ': .2, 'SCHD': .1, 'TQQQ': .7}) == pytest.approx({'SCHD': .3, 'TQQQ': .7})
 
 
@@ -37,18 +38,10 @@ def test_attack_parameter_is_twenty_percent_with_tqqq_leverage(vol, expected):
     assert config['V5_VOL_TARGET_ANNUAL'] == .15  # Do not mutate other buckets.
 
 
-@pytest.mark.parametrize('bucket', ['UP', 'DOWN', 'STRONG_DOWN'])
-def test_other_regimes_preserve_native_sizing_and_weights(bucket):
-    from sgs import regime_v5 as rv
-    config, qsig = cfg(), {'ratio': 1.04}
-    sleeve = rv.bucket_sleeve(config, bucket, 'SPMO', qsig)
-    _, tilt = rv.up_bucket_tilt(config, qsig) if bucket == 'UP' else (None, None)
-    expected = rv.cash_ratio_scale(config, config['CASH_RATIO_MODE'], bucket, qsig, tilt,
-                                  .4, rv.bucket_risk_ticker(config, bucket, 'SPMO'), rv.sleeve_leverage(sleeve))
-    actual = risk_scale(config, bucket, qsig, 'SPMO', .4, sleeve)
-    assert actual == expected
-    assert target_weights(config, bucket, qsig, 'SPMO', actual) == pytest.approx({
-        t: w for t, w in income_sleeve(rv.effective_weights_v5(config, bucket, qsig, 'SPMO', expected)).items() if w > 1e-12})
+def test_plain_up_is_unreachable_under_all_up_and_blocks_suggestions():
+    assert cfg()['V5_STRONG_UP_RULE'] == 'ALL_UP'
+    with pytest.raises(ValueError, match='趋势状态无效'):
+        target_weights(cfg(), 'UP', {'ratio': 1.04}, 'SPMO', 1.)
 
 
 class Market:
@@ -77,20 +70,20 @@ def test_snapshot_direct_schd_does_not_use_income_volatility_to_cascade():
     assert a['version'] == b['version'] == VERSION
     assert a['bucket'] == b['bucket'] == 'STRONG_UP'
     assert a['weights'] == b['weights']
-    assert set(a['weights']) == {'TQQQ', 'SCHD'}
-    # Market fixture has high TQQQ volatility: rejected weight goes to SCHD.
-    assert .2 < a['weights']['SCHD'] < .8
+    assert set(a['weights']) == {'TQQQ'}
+    # Market fixture has high TQQQ volatility: rejected weight stays in cash.
+    assert .2 < a['weights']['TQQQ'] < .8
     assert 'GPIQ' not in a['weights'] and 'GPIQ' not in b['prices']
     assert all('GPIQ' not in symbols for symbols, adj in volatile.calls if adj == 'all')
     assert set(volatile.calls[-1][0]) == set(MANAGED_TICKERS)
 
 
-@pytest.mark.parametrize('old_version', ['strategy2-G2-20261020', 'strategy2-G2-SCHD20-20261021', 'strategy2-G2-SCHD20-direct-vol20-20261022'])
+@pytest.mark.parametrize('old_version', ['strategy2-G2-20261020', 'strategy2-G2-SCHD20-20261021', 'strategy2-G2-SCHD20-direct-vol20-20261022', 'strategy2-G2-up15-side20-direct-vol20-tiered-20261024', 'strategy2-tqqq100-sgov-vol20-tiered-20261103'])
 def test_old_same_date_snapshot_is_rewarmed_not_returned(old_version):
     actual = snapshot(Market(), date(2026, 10, 20),
                       {'version': old_version, 'as_of': '2026-10-19', 'state': {'obsolete': True}})
     assert actual['version'] == VERSION
-    assert 'GPIQ' not in actual['weights']
+    assert not {'GPIQ', 'SCHD', 'SGOV'} & actual['weights'].keys()
 
 
 @pytest.mark.parametrize('nav', [400., 10000.])
@@ -143,13 +136,39 @@ def test_missing_legacy_quote_blocks_only_legacy_exposure():
 
 
 @pytest.mark.parametrize('scale', [.3, .5, 1.])
-def test_sideways_balanced_target_does_not_depend_on_attack_scaling(scale):
-    assert target_weights(cfg(), 'SIDEWAYS', {'ratio': 1.}, 'SPMO', scale) == pytest.approx({'SCHD': .2, 'SGOV': .8})
+def test_defensive_target_is_all_cash_regardless_of_attack_scaling(scale):
+    for bucket in ['SIDEWAYS', 'DOWN', 'STRONG_DOWN']:
+        assert target_weights(cfg(), bucket, {'ratio': 1.}, 'SPMO', scale) == {}
 
 
-def test_new_up_floor_is_allowed_without_lowering_downside_floor():
+@pytest.mark.parametrize('vol,tqqq', [(.3, 1.), (.7018, .6/.7018), (1.2, .5), (3., .3)])
+def test_strong_up_tqqq_cap_is_one_hundred_percent(vol, tqqq):
     config = cfg()
-    assert config['V5_GPIQ_FLOOR'] == .2
-    assert target_weights(config, 'STRONG_UP', {'ratio': 1.06}, 'SPMO', 1.)['SCHD'] == pytest.approx(.15)
-    for bucket in ['DOWN', 'STRONG_DOWN']:
-        assert target_weights(config, bucket, {'ratio': .8}, 'SPMO', 1.) == pytest.approx({'SCHD': .2, 'SGOV': .8})
+    scale = risk_scale(config, 'STRONG_UP', {'ratio': 1.06}, 'SPMO', vol, {'TQQQ': 1.})
+    actual = target_weights(config, 'STRONG_UP', {'ratio': 1.06}, 'SPMO', scale)
+    assert actual['TQQQ'] == pytest.approx(tqqq)
+    assert set(actual) == {'TQQQ'}
+
+
+def test_existing_schd_is_fully_exited_into_new_targets():
+    data = {'weights': {'TQQQ': .7}, 'prices': dict.fromkeys(MANAGED_TICKERS, 100)}
+    actions = recommendations(data, {'TQQQ': 7, 'SCHD': D('.37'), 'SGOV': 2}, 13)
+    assert dict(symbol='SCHD', action='SELL', shares=.37, reference_price=100.) in actions
+    assert dict(symbol='SGOV', action='SELL', shares=2., reference_price=100.) in actions
+    assert not any(a['action'] == 'BUY' for a in actions)
+
+
+def test_defensive_regime_sells_everything_to_cash():
+    data = {'weights': {}, 'prices': dict.fromkeys(MANAGED_TICKERS, 100)}
+    actions = recommendations(data, {'TQQQ': D('.618405'), 'SCHD': D('.37')}, 13)
+    assert sorted((a['symbol'], a['action'], a['shares']) for a in actions) == [
+        ('SCHD', 'SELL', .37), ('TQQQ', 'SELL', .618405)]
+
+
+@pytest.mark.parametrize('weights,text', [
+    ({'TQQQ': .855}, 'TQQQ 85.5%、现金 14.5%'),
+    ({'TQQQ': 1.}, 'TQQQ 100.0%'),
+    ({}, '现金 100.0%'),
+])
+def test_weights_text_shows_cash_remainder(weights, text):
+    assert weights_text(weights) == text

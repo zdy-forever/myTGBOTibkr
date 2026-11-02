@@ -135,7 +135,7 @@ def s2_snapshot(factory, market, today):
 
 
 def s2_text(session, user_id, data, today):
-    from sgs.live import MANAGED_TICKERS, PROFILE_LABEL, recommendations
+    from sgs.live import MANAGED_TICKERS, PROFILE_LABEL, recommendations, weights_text
     fraction = allocation_fraction(session, user_id, 'strategy2')
     cash, currency = allocated_cash(session, user_id, 'strategy2')
     from .fx import conversion_note, to_usd
@@ -153,7 +153,7 @@ def s2_text(session, user_id, data, today):
     lines = [f'📊 <b>策略 2 · 每日盘前报告 {today}</b>', f'行情截至：{data["as_of"]}',
              f'策略配置：{PROFILE_LABEL}',
              f'当前趋势：<b>{escape(data["trend"])}</b>', f'可用现金：${cash:,.2f}',
-             '目标配置：' + '、'.join(f'{escape(t)} {w:.1%}' for t, w in data['weights'].items() if w > 0), '',
+             '目标配置：' + escape(weights_text(data['weights'])), '',
              '<b>今日操作</b>']
     if fx_note:
         lines.insert(6, escape(fx_note))

@@ -1,4 +1,4 @@
-"""Read-only balanced G2 adapter. Closed bars only; no research runner or orders."""
+"""Read-only TQQQ+cash adapter. Closed bars only; no research runner or orders."""
 from dataclasses import asdict
 from datetime import timedelta
 from decimal import Decimal, ROUND_DOWN
@@ -15,8 +15,8 @@ LEGACY_TICKERS = ('GPIQ',)
 MANAGED_TICKERS = TICKERS + LEGACY_TICKERS
 LABELS = {'STRONG_UP': '强上涨', 'UP': '上涨', 'SIDEWAYS': '震荡',
           'DOWN': '下跌', 'STRONG_DOWN': '强下跌'}
-VERSION = 'strategy2-G2-up15-side20-direct-vol20-tiered-20261024'
-PROFILE_LABEL = '上涨SCHD下限15% · 震荡SCHD20% · 平衡版'
+VERSION = 'strategy2-tqqq100-cash-vol20-tiered-20261103'
+PROFILE_LABEL = '上涨TQQQ上限100%控波 · 其余现金 · 不持SCHD/SGOV'
 EXECUTION_VERSION = 'tiered-v5-min80-fee005-whole'
 SHARE_STEP = Decimal('0.000001')
 MIN_TRADE_USD = Decimal('80')
@@ -26,11 +26,10 @@ EXTERNAL_FEE_BUFFER = Decimal('0.05')
 
 def cfg():
     config = build_cfg_v5('DEV_RECENT')
-    # GPIQ remains the frozen core's internal income-role name. Both its
-    # targets AND volatility inputs are mapped to the actual SCHD instrument.
+    # V5_GPIQ_FLOOR only satisfies the frozen core's config validation; live
+    # targets come from target_weights and never hold SCHD/GPIQ.
     config.update(V5_GPIQ_FLOOR=.2, V5_PROXIES={}, SLIPPAGE_PER_SIDE=.002,
-                  LIVE_STRONG_UP_VOL_TARGET_ANNUAL=.20,
-                  LIVE_STRONG_UP_SCHD_FLOOR=.15, LIVE_SIDEWAYS_SCHD_WEIGHT=.20)
+                  LIVE_STRONG_UP_VOL_TARGET_ANNUAL=.20, LIVE_STRONG_UP_TQQQ_CAP=1.)
     return config
 
 
@@ -56,20 +55,23 @@ def risk_scale(config, bucket, qsig, slot, volatility, sleeve):
 
 def target_weights(config, bucket, qsig, slot, scale, *, spmo_sig=None, level_scales=None):
     if bucket == 'STRONG_UP':
-        attack = (1 - config['LIVE_STRONG_UP_SCHD_FLOOR']) * scale
-        weights = {'TQQQ': attack, 'SCHD': 1 - attack}
-    elif bucket == 'SIDEWAYS':
-        income = config['LIVE_SIDEWAYS_SCHD_WEIGHT']
-        weights = {'SCHD': income, 'SGOV': 1 - income}
+        weights = {'TQQQ': config['LIVE_STRONG_UP_TQQQ_CAP'] * scale}
+    elif bucket in ('SIDEWAYS', 'DOWN', 'STRONG_DOWN'):
+        weights = {}
     else:
-        weights = income_sleeve(rv.effective_weights_v5(
-            config, bucket, qsig, slot, scale, spmo_sig=spmo_sig, level_scales=level_scales))
-    floor = config['LIVE_STRONG_UP_SCHD_FLOOR'] if bucket == 'STRONG_UP' else config['V5_GPIQ_FLOOR']
-    if (not set(weights) <= set(TICKERS) or weights.get('SCHD', 0) < floor-1e-10
-            or any(not math.isfinite(w) or w < 0 for w in weights.values())
-            or sum(weights.values()) > 1+1e-10):
+        raise ValueError('S2 趋势状态无效，暂停建议。')
+    if any(not math.isfinite(w) or not 0 <= w <= 1 for w in weights.values()):
         raise ValueError('S2 目标配置无效，暂停建议。')
     return {t: w for t, w in weights.items() if w > 1e-12}
+
+
+def weights_text(weights):
+    """Target allocation for display; the unallocated remainder is uninvested cash."""
+    parts = [f'{t} {w:.1%}' for t, w in weights.items() if w > 0]
+    cash = 1 - sum(weights.values())
+    if cash > 5e-4:
+        parts.append(f'现金 {cash:.1%}')
+    return '、'.join(parts)
 
 
 def _panel(bars, session_date):

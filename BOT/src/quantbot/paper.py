@@ -631,7 +631,8 @@ def premarket(factory, market, broker, account_id, now, tz, hour, snapshot_fn):
 
 
 def _premarket_text(today, data, results, halted, deposits, dividends, alerts, view):
-    weights = '、'.join(f'{escape(t)} {w:.1%}' for t, w in data['weights'].items() if w > 0)
+    from sgs.live import weights_text
+    weights = escape(weights_text(data['weights']))
     lines = [f'🧪 <b>S2 模拟盘 · {today} 盘前</b>',
              f'行情截至 {data["as_of"]} · 趋势 <b>{escape(data["trend"])}</b> · 目标 {weights}', '',
              '<b>订单</b>（开盘市价，Alpaca 模拟成交）']

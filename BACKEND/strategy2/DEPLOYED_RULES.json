@@ -1,16 +1,12 @@
 {
-  "version": "strategy2-G2-up15-side20-direct-vol20-tiered-20261024",
-  "adopted_on": "2026-10-22",
-  "user_selection": "Balanced: STRONG_UP SCHD floor15%; SIDEWAYS20%SCHD80%SGOV; DOWN/STRONG_DOWN20%SCHD80%SGOV. Attack vol20%, direct SCHD.",
-  "income_ticker": "SCHD",
+  "version": "strategy2-tqqq100-cash-vol20-tiered-20261103",
+  "adopted_on": "2026-11-03",
+  "user_selection": "TQQQ+cash only: STRONG_UP TQQQ cap100% vol-scaled (attack vol20%), remainder cash; SIDEWAYS/DOWN/STRONG_DOWN 100% cash. SCHD and SGOV removed (existing holdings exit on next suggestion).",
+  "income_ticker": null,
   "signal_ticker": "QQQ",
   "active_tickers": [
     "QQQ",
-    "QQQM",
-    "SPMO",
-    "SCHD",
-    "TQQQ",
-    "SGOV"
+    "TQQQ"
   ],
   "managed_tickers": [
     "QQQ",
@@ -25,10 +21,10 @@
     "GPIQ"
   ],
   "regime_rules": {
-    "STRONG_UP": "TQQQ=.85*clip(3*.20/prior20closeTQQQvol,.3,1); remainder directly SCHD; floor15%",
-    "SIDEWAYS": "20% SCHD +80% SGOV target",
-    "DOWN": "20% SCHD + SGOV discretionary sleeve",
-    "STRONG_DOWN": "20% SCHD + SGOV discretionary sleeve"
+    "STRONG_UP": "TQQQ=1.00*clip(3*.20/prior20closeTQQQvol,.3,1); remainder uninvested cash; no SCHD/SGOV",
+    "SIDEWAYS": "100% cash",
+    "DOWN": "100% cash",
+    "STRONG_DOWN": "100% cash"
   },
   "research_candidates_enabled": [],
   "execution_version": "tiered-v5-min80-fee005-whole",
@@ -37,7 +33,7 @@
   "income_role_mapping": {
     "GPIQ": "SCHD"
   },
-  "mapping_scope": "Internal income role maps to SCHD; live overrides STRONG_UP floor/attack volatility/direct routing and SIDEWAYS allocation. DOWN/STRONG_DOWN unchanged.",
+  "mapping_scope": "Live overrides every regime target: STRONG_UP TQQQ cap1.0*vol scale, remainder cash; all other regimes 100% cash. QQQ trend classifier and execution filters unchanged. SCHD/SGOV/QQQM/SPMO/GPIQ held only for exit.",
   "migration": "0016_daily_report_version; snapshots and daily reports invalidated by VERSION",
   "config_snapshot": {
     "V5_STRONG_UP_ASSET": "TQQQ",
@@ -157,14 +153,8 @@
     "sgs/state_machine.py": "ad56d1f83c9cee08e66b2394e3bc2301f7b94491ae460aabdf5e133edd18ea37"
   },
   "attack_volatility_parameter": 0.2,
-  "research_reference": "reports/data_balanced15; up15-side20",
+  "research_reference": "auto-quant strategy2/research/tqqq_cash_lab.py (c100_zero, zero-interest cash): 2000+ 18.1%/-62.0%, 2012+ 34.1%/-45.1%, 2020+ 41.5%/-39.3%; previous balanced 18.2%/-54.9%, 32.4%/-40.2%. All history previously viewed; no holdout.",
   "account_funding": "Actual user allocated holdings and cash; STARTING_CASH_USD and MONTHLY_DEPOSIT_USD are archived research defaults, never automatic live funding.",
-  "income_target_floor_by_regime": {
-    "STRONG_UP": 0.15,
-    "SIDEWAYS": 0.2,
-    "DOWN": 0.2,
-    "STRONG_DOWN": 0.2
-  },
   "execution_cost_policy": {
     "min_trade_usd": 80,
     "max_fee_ratio": 0.005,
@@ -176,5 +166,6 @@
     "mixed_exit_fee": "conservative sum of whole and fractional portions; broker preview governs",
     "fx_costs_included": false,
     "research_status": "execution cost policy only; archived return backtests unchanged"
-  }
+  },
+  "previous_version": "strategy2-G2-up15-side20-direct-vol20-tiered-20261024"
 }
