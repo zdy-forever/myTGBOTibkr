@@ -487,7 +487,7 @@ async def test_run_and_notify_reuses_a_fresh_run_pushes_to_users_and_marks_the_m
 def test_help_topics_exist_fit_telegram_and_cover_every_registered_command():
     from telegram.ext import Application, CommandHandler
 
-    from quantbot import bot, help_text, paper
+    from quantbot import bot, email_commands, help_text, paper
 
     for topic in ("导入", "问题", "csv"):
         assert help_text.help_for(topic) != help_text.QUICK
@@ -498,7 +498,7 @@ def test_help_topics_exist_fit_telegram_and_cover_every_registered_command():
     commands = {c for handler in app.handlers[0] for c in getattr(handler, "commands", ())}
     admin = {"users", "stats", "health", "runstrategy", "announce", "important_announce", "whitelist_add", "whitelist_list", "whitelist_show", "whitelist_edit", "whitelist_remove",
              "admin_help", "admin_list", "admin_show", "admin_add", "admin_edit", "admin_remove",
-             "start", "cancel", "help", "signals"} | {c.removeprefix("/") for c in paper.COMMANDS}
+             "start", "cancel", "help", "signals"} | {c.removeprefix("/") for c in paper.COMMANDS | email_commands.COMMANDS}
     assert {"check", "check1", "check2", "cooldown"} <= commands
     handlers = {command: handler.callback for handler in app.handlers[0]
                 if isinstance(handler, CommandHandler) for command in handler.commands}
@@ -508,6 +508,8 @@ def test_help_topics_exist_fit_telegram_and_cover_every_registered_command():
     assert handlers["signals"] is bot.check_one
     missing = [c for c in sorted(commands - admin) if f"/{c}" not in "\n".join(help_text.help_pages({"strategy1", "strategy2"}))]
     assert not missing, f"/help does not mention: {missing}"
+    assert all(c in help_text.ADMIN_HELP for c in email_commands.COMMANDS)
+    assert len(help_text.ADMIN_HELP) < 4096
 
 
 async def test_cooldown_command_shows_only_the_callers_own_rules(factory, accounts):

@@ -162,8 +162,31 @@ class DailyReport(Base):
     session_date: Mapped[date] = mapped_column(Date, nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     data_ready: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    has_actions: Mapped[bool | None] = mapped_column(Boolean)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class EmailSubscription(Base):
+    """One mailbox bound to one bot user; `strategies` is a sorted comma list like "1,2"."""
+    __tablename__ = "email_subscriptions"
+    email: Mapped[str] = mapped_column(String(254), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    strategies: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class EmailDelivery(Base):
+    __tablename__ = "email_deliveries"
+    __table_args__ = (UniqueConstraint("email", "strategy_id", "session_date", name="uq_email_delivery"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(ForeignKey("email_subscriptions.email", ondelete="CASCADE"), index=True)
+    strategy_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    session_date: Mapped[date] = mapped_column(Date, nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_error: Mapped[str | None] = mapped_column(Text)
 

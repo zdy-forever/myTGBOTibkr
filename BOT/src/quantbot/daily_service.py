@@ -42,7 +42,7 @@ def needs_report(session, uid, strategy_id, today, now):
                               now - s1._aware(report.created_at) >= timedelta(minutes=30))
 
 
-def save_report(session, uid, strategy_id, today, body, *, ready=True):
+def save_report(session, uid, strategy_id, today, body, *, ready=True, has_actions=None):
     version = None
     if strategy_id == 'strategy2':
         from sgs.live import VERSION
@@ -50,9 +50,11 @@ def save_report(session, uid, strategy_id, today, body, *, ready=True):
     report = report_for(session, uid, strategy_id, today)
     if report is None:
         session.add(DailyReport(user_id=uid, strategy_id=strategy_id, session_date=today,
-                                body=body, data_ready=ready, strategy_version=version))
+                                body=body, data_ready=ready, strategy_version=version,
+                                has_actions=has_actions))
     else:
         report.body = body
+        report.has_actions = has_actions
         report.strategy_version = version
         report.created_at = datetime.now(UTC)
         report.data_ready = ready
@@ -60,6 +62,15 @@ def save_report(session, uid, strategy_id, today, body, *, ready=True):
             report.notified_at = None
             report.attempts = 0
             report.last_error = None
+
+
+def email_users(session, strategy_id):
+    """Users with a mailbox subscribed to this strategy get reports even with Telegram pushes off."""
+    from .email_service import strategy_numbers
+    from .models import EmailSubscription
+    number = strategy_id.removeprefix('strategy')
+    return {sub.user_id for sub in session.scalars(select(EmailSubscription))
+            if number in strategy_numbers(sub.strategies)}
 
 
 def save_failure(factory, app, ids, strategy_id, today):
@@ -135,6 +146,11 @@ def s2_snapshot(factory, market, today):
 
 
 def s2_text(session, user_id, data, today):
+    return s2_report(session, user_id, data, today)[0]
+
+
+def s2_report(session, user_id, data, today):
+    """Report body plus whether it contains at least one executable order."""
     from sgs.live import MANAGED_TICKERS, PROFILE_LABEL, recommendations, weights_text
     fraction = allocation_fraction(session, user_id, 'strategy2')
     cash, currency = allocated_cash(session, user_id, 'strategy2')
@@ -170,10 +186,15 @@ def s2_text(session, user_id, data, today):
               '清仓和必要风险减仓不受上述成本门槛限制，卖出可保留六位小数。先卖后买，数量不超过策略分配份额。',
               '手续费按IBKR Tiered估算，含每单0.05美元外部费用缓冲；实际费用以券商订单预览为准，换汇成本另计。参考上一交易日收盘价，实际成交价格会变化。',
               '成交后请更新持仓和现金；未更新时后续报告可能重复提醒。', DISCLAIMER_HTML]
-    return '\n'.join(lines)
+    return '\n'.join(lines), bool(actions)
 
 
 def s1_text(session, user, run, settings, today, days, app):
+    return s1_report(session, user, run, settings, today, days, app)[0]
+
+
+def s1_report(session, user, run, settings, today, days, app):
+    """Report body plus whether it contains at least one actionable signal."""
     prefs = session.get(NotificationPreference, user.id)
     month = today.strftime('%Y-%m')
     due = prefs.last_notice_month != month and (
@@ -191,7 +212,7 @@ def s1_text(session, user, run, settings, today, days, app):
     if due:
         prefs.last_notice_month = month
     lines += ['', '每日检查；月度买入按 /auto_notice_date 设置的日期提醒。成交后请更新持仓和现金。', DISCLAIMER_HTML]
-    return '\n'.join(lines)
+    return '\n'.join(lines), bool(actions)
 
 
 async def daily_tick(context, now=None):
@@ -230,7 +251,8 @@ async def _daily_run(app, now):
     for strategy_id in ('strategy1', 'strategy2'):
         with transaction(factory) as session:
             users = list(session.scalars(select(User).join(UserStrategy).where(UserStrategy.strategy_id == strategy_id)))
-            ids = [u.id for u in users if eligible(session, app, u, strategy_id)
+            mailed = email_users(session, strategy_id)
+            ids = [u.id for u in users if eligible(session, app, u, strategy_id, notify=u.id not in mailed)
                    and needs_report(session, u.id, strategy_id, today, now)]
         if not ids:
             continue
@@ -257,11 +279,12 @@ async def _daily_run(app, now):
                 try:
                     with transaction(factory) as session:
                         user = session.get(User, uid)
-                        if not eligible(session, app, user, strategy_id):
+                        if not eligible(session, app, user, strategy_id,
+                                        notify=uid not in email_users(session, strategy_id)):
                             continue
-                        body = (s1_text(session, user, run, settings, today, days, app) if strategy_id == 'strategy1'
-                                else s2_text(session, uid, data, today))
-                        save_report(session, uid, strategy_id, today, body)
+                        body, acts = (s1_report(session, user, run, settings, today, days, app)
+                                      if strategy_id == 'strategy1' else s2_report(session, uid, data, today))
+                        save_report(session, uid, strategy_id, today, body, has_actions=acts)
                 except Exception:
                     log.exception('daily report generation failed for one user')
                     save_failure(factory, app, [uid], strategy_id, today)
@@ -269,6 +292,11 @@ async def _daily_run(app, now):
             log.exception('daily report generation failed: %s', strategy_id)
             save_failure(factory, app, ids, strategy_id, today)
     await deliver_reports(app, today, opening)
+    from .email_service import deliver_emails
+    try:
+        await deliver_emails(app, today, opening)
+    except Exception:
+        log.exception('daily email delivery failed')
 
 
 async def deliver_reports(app, today, opening):

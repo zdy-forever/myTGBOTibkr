@@ -41,7 +41,7 @@ from telegram.ext import (
 from .allocations import allocation_fraction, cash_budgets, parse_weights, save_weights, selections
 from .strategy_commands import (check_two, fx_command, parse_pool_change, plain_cash, pool_command, save_cash_text,
                                 strategy_callback, strategy_keyboard, strategy_two_off)
-from . import paper
+from . import email_commands, paper
 from .announcements import publish_announcement
 from .chat import (
     create_message,
@@ -105,7 +105,7 @@ SUBSCRIPTION_OFFER = ("需要开通订阅：400 Telegram Stars / 30 天（约 US
                       "发送 /subscribe 开通。联系管理员可以有优惠：" + ADMIN_CONTACT_URL)
 ADMIN_COMMANDS = {"/admin_help", "/admin_list", "/admin_show", "/admin_add", "/admin_edit", "/admin_remove",
                   "/whitelist_add", "/whitelist_list", "/whitelist_show", "/whitelist_edit", "/whitelist_remove",
-                  "/announce", "/important_announce", "/users", "/stats", "/health", "/runstrategy"} | paper.COMMANDS
+                  "/announce", "/important_announce", "/users", "/stats", "/health", "/runstrategy"} | paper.COMMANDS | email_commands.COMMANDS
 
 _PUBLIC_MENU = [("start", "开始或查看当前权限"), ("help", "使用说明"),
                 ("privacy", "隐私说明"), ("help_faq", "常见问题")]
@@ -139,7 +139,7 @@ _ADMIN_MENU = _PREMIUM_MENU + [
     ("whitelist_remove", "移除免费白名单"), ("announce", "发布普通公告"),
     ("important_announce", "向所有已验证用户发送并置顶公告"),
     ("users", "查看用户概况"), ("stats", "查看系统统计"),
-    ("health", "检查运行状态"), ("runstrategy", "立即运行策略")]
+    ("health", "检查运行状态"), ("runstrategy", "立即运行策略"), *email_commands.ADMIN_MENU]
 
 
 def _menu_for(status: str, enabled: set[str] | None = None) -> list[BotCommand]:
@@ -1989,7 +1989,7 @@ def configure_application(application: Application, accounts: AccountService, fa
                              ("strategy", strategy_command), ("strategy1", strategy_one),
                              ("strategy1_off", strategy_one_off), ("strategy2", strategy_two),
                              ("strategy2_off", strategy_two_off), ("check1", check_one), ("check2", check_two),
-                             *paper.HANDLERS.items(),
+                             *paper.HANDLERS.items(), *email_commands.HANDLERS.items(),
                              ("portfolio", portfolio), ("import", import_start), ("export", export_command), ("history", history), ("check", check), ("signals", signals), ("cooldown", cooldown), ("unbind", unbind_start), ("help_import", help_import), ("help_faq", help_faq), ("settings", settings), ("users", users_command), ("stats", stats_command), ("health", health), ("runstrategy", run_strategy)]:
         if command not in _STAGED_HANDLERS:
             command_handlers[command] = handler

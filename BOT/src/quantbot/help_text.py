@@ -265,6 +265,15 @@ ADMIN_HELP = """🛡️ <b>管理员说明书</b>
 /health　检查 Bot 与数据库状态
 /runstrategy　立即运行策略 1，向已启用策略 1、权重有效、已开启策略通知且有 Premium 权限的用户推送建议
 
+<b>邮件提醒</b>
+每个交易日盘前，按绑定用户的当日日报给邮箱发邮件：有操作发完整日报，无操作发固定文本（编辑 BOT/src/quantbot/email_templates.py）。
+/email_list　查看所有邮件提醒及最近发送结果
+/email_add (邮箱) (用户ID) (策略)　例如 <code>/email_add a@qq.com 123456789 1,2</code>
+/email_edit (邮箱) (策略)　修改订阅的策略，例如 <code>/email_edit a@qq.com 2</code>
+/email_remove (邮箱)　删除
+/email_test (邮箱)　立即发送一封测试邮件
+发件邮箱与授权码在服务器 .env 配置 EMAIL_SENDER、EMAIL_PASSWORD。绑定用户关闭 Telegram 策略通知后仍会收到邮件。
+
 <b>S2 模拟盘（仅 Bot Owner，服务器需 PAPER_TRADING=1）</b>
 /paper　查看模拟盘净值、回撤、持仓与 QQQM 定投对照
 /paper_start 900AUD 400AUD　开始：初始资金 + 每月首个交易日入金（第二项可省略）
